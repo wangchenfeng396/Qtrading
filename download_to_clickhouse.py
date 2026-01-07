@@ -6,6 +6,7 @@ import clickhouse_connect
 from datetime import datetime, timedelta
 import os
 import shutil
+import sys
 
 # --- Configuration ---
 SYMBOL = 'BTCUSDT'
@@ -15,22 +16,47 @@ END_DATE = datetime.now()
 TEMP_DIR = 'temp_download'
 
 # ClickHouse Configuration
-CLICKHOUSE_HOST = 'localhost'
-CLICKHOUSE_PORT = 8123
+CLICKHOUSE_HOST = '192.168.66.10'
+CLICKHOUSE_PORT = 18123
 CLICKHOUSE_USER = 'default'
-CLICKHOUSE_PASSWORD = '' # Leave empty if no password
+CLICKHOUSE_PASSWORD = 'uming' # Leave empty if no password
 DB_NAME = 'crypto_data'
 TABLE_NAME = 'btc_usdt_1s'
 
 def get_month_list(start, end):
+    months = []
     current = start
     while current <= end:
-        yield current
-        # Move to next month
+        # Skip current month (incomplete)
+        if not (current.year == end.year and current.month == end.month):
+            months.append(current)
+        
         if current.month == 12:
             current = current.replace(year=current.year + 1, month=1)
         else:
             current = current.replace(month=current.month + 1)
+    return months
+
+def download_file(url, desc):
+    response = requests.get(url, stream=True)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    
+    total_size = int(response.headers.get('content-length', 0))
+    block_size = 1024 * 1024  # 1MB
+    data = io.BytesIO()
+    downloaded = 0
+    
+    print(f"  [Download] {desc}: ", end='', flush=True)
+    for chunk in response.iter_content(chunk_size=block_size):
+        data.write(chunk)
+        downloaded += len(chunk)
+        if total_size > 0:
+            percent = (downloaded / total_size) * 100
+            print(f"\r  [Download] {desc}: {percent:.1f}% ({downloaded/(1024*1024):.1f}MB)", end='', flush=True)
+    print("\n", end='')
+    return data
 
 def download_and_ingest():
     # 1. Setup ClickHouse
@@ -42,12 +68,8 @@ def download_and_ingest():
             password=CLICKHOUSE_PASSWORD
         )
         
-        # Create Database if not exists
         client.command(f'CREATE DATABASE IF NOT EXISTS {DB_NAME}')
         
-        # Create Table
-        # Binance Kline Format:
-        # Open time, Open, High, Low, Close, Volume, Close time, Quote asset volume, Number of trades, Taker buy base asset volume, Taker buy quote asset volume, Ignore
         create_table_query = f'''
         CREATE TABLE IF NOT EXISTS {DB_NAME}.{TABLE_NAME} (
             open_time DateTime64(3),
@@ -65,78 +87,81 @@ def download_and_ingest():
         ORDER BY open_time
         '''
         client.command(create_table_query)
-        print("ClickHouse table checked/created.")
+        print(">>> ClickHouse connection established and table verified.")
         
     except Exception as e:
-        print(f"Failed to connect to ClickHouse: {e}")
-        print("Please ensure ClickHouse is running and credentials are correct.")
+        print(f"❌ Failed to connect to ClickHouse: {e}")
         return
 
-    # 2. Setup Temp Dir
+    # 2. Setup Temp Dir and Month List
     if not os.path.exists(TEMP_DIR):
         os.makedirs(TEMP_DIR)
+    
+    all_months = get_month_list(START_DATE, END_DATE)
+    total_months = len(all_months)
+    total_records_all = 0
+
+    print(f">>> Task Started: Downloading {TIMEFRAME} data for {total_months} months.")
+    print("-" * 60)
 
     # 3. Iterate Months
-    for date in get_month_list(START_DATE, END_DATE):
+    for idx, date in enumerate(all_months):
         year_str = date.strftime('%Y')
         month_str = date.strftime('%m')
+        month_label = f"{year_str}-{month_str}"
         
-        # Skip current month (files usually not available until month ends)
-        if date.year == END_DATE.year and date.month == END_DATE.month:
-            print(f"Skipping current month {year_str}-{month_str} (incomplete).")
-            continue
+        overall_progress = ((idx + 1) / total_months) * 100
+        print(f"[{overall_progress:.1f}%] Processing Month {idx+1}/{total_months}: {month_label}")
 
         file_name = f"{SYMBOL}-{TIMEFRAME}-{year_str}-{month_str}.zip"
         url = f"https://data.binance.vision/data/spot/monthly/klines/{SYMBOL}/{TIMEFRAME}/{file_name}"
         
-        print(f"Processing {year_str}-{month_str}...")
-        
         try:
-            # Download
-            response = requests.get(url)
-            if response.status_code == 404:
-                print(f"  File not found: {url}")
+            # Download with progress
+            file_data = download_file(url, file_name)
+            if not file_data:
+                print(f"  ⚠️  File not found (skipping): {file_name}")
                 continue
-            response.raise_for_status()
             
             # Extract
-            with zipfile.ZipFile(io.BytesIO(response.content)) as z:
-                # The zip usually contains one csv file
+            with zipfile.ZipFile(file_data) as z:
                 csv_filename = z.namelist()[0]
                 z.extract(csv_filename, TEMP_DIR)
                 csv_path = os.path.join(TEMP_DIR, csv_filename)
                 
                 # Read CSV
-                # No header in Binance files
                 columns = [
                     'open_time', 'open', 'high', 'low', 'close', 'volume', 
                     'close_time', 'quote_volume', 'trades', 
                     'taker_buy_base', 'taker_buy_quote', 'ignore'
                 ]
                 
+                print(f"  [Ingest] Reading {csv_filename}...", end='', flush=True)
                 df = pd.read_csv(csv_path, names=columns)
-                
-                # Drop 'ignore' column
                 df.drop(columns=['ignore'], inplace=True)
-                
-                # Prepare for Insert
-                # Ensure types match ClickHouse schema
-                # ClickHouse DateTime64 expects milliseconds if defined as (3)
-                # Binance timestamps are already in ms
+                df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
+                df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
+                print(f" Done ({len(df)} rows).")
                 
                 # Insert
+                print(f"  [Ingest] Writing to ClickHouse...", end='', flush=True)
                 client.insert_df(f'{DB_NAME}.{TABLE_NAME}', df)
-                print(f"  Ingested {len(df)} records.")
+                total_records_all += len(df)
+                print(f" Done. Total records in DB: {total_records_all:,}")
                 
                 # Cleanup
                 os.remove(csv_path)
 
         except Exception as e:
-            print(f"  Error processing {year_str}-{month_str}: {e}")
+            print(f"\n  ❌ Error processing {month_label}: {e}")
+
+        print("-" * 30)
 
     # Cleanup Temp Dir
-    shutil.rmtree(TEMP_DIR)
-    print("Done!")
+    if os.path.exists(TEMP_DIR):
+        shutil.rmtree(TEMP_DIR)
+    
+    print(f"\n✅ Task Completed! Total records ingested: {total_records_all:,}")
 
 if __name__ == "__main__":
     download_and_ingest()
