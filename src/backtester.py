@@ -5,17 +5,23 @@ import config
 import strategy
 
 class Trade:
-    def __init__(self, entry_time, entry_price, sl_price, size, sl_pct):
+    def __init__(self, entry_time, entry_price, sl_price, size, sl_pct, side='LONG'):
         self.entry_time = entry_time
         self.entry_price = entry_price
         self.sl_price = sl_price
         self.size = size # Quantity in BTC
         self.sl_pct = sl_pct
+        self.side = side # 'LONG' or 'SHORT'
         
-        # Calculate Targets
-        risk_dist = entry_price - sl_price
-        self.tp1_price = entry_price + (risk_dist * config.TP1_RATIO)
-        self.tp2_price = entry_price + (risk_dist * config.TP2_RATIO)
+        # Calculate Targets based on side
+        risk_dist = abs(entry_price - sl_price)
+        
+        if self.side == 'LONG':
+            self.tp1_price = entry_price + (risk_dist * config.TP1_RATIO)
+            self.tp2_price = entry_price + (risk_dist * config.TP2_RATIO)
+        else: # SHORT
+            self.tp1_price = entry_price - (risk_dist * config.TP1_RATIO)
+            self.tp2_price = entry_price - (risk_dist * config.TP2_RATIO)
         
         self.status = 'OPEN' # OPEN, TP1_HIT, CLOSED
         self.tp1_filled = False
@@ -51,13 +57,15 @@ class Backtester:
             self.stop_trading_today = False
 
     def calculate_position_size(self, entry_price, sl_price):
-        # Risk per trade = $0.50
-        # Risk per unit = Entry - SL
-        risk_per_unit = entry_price - sl_price
+        # Risk per trade = 2% of current capital
+        risk_amount = self.capital * config.RISK_PER_TRADE_PCT
+        
+        # Risk per unit = abs(Entry - SL)
+        risk_per_unit = abs(entry_price - sl_price)
         if risk_per_unit <= 0: return 0
         
         # Quantity = Total Risk Allowed / Risk Per Unit
-        qty = config.RISK_PER_TRADE_AMOUNT / risk_per_unit
+        qty = risk_amount / risk_per_unit
         
         # Check Leverage Constraint (Margin Requirement)
         # Position Value = Qty * Entry
@@ -74,7 +82,11 @@ class Backtester:
     def close_trade(self, trade, price, reason, timestamp, pct=1.0):
         # Calculate PnL
         close_qty = trade.size * pct
-        trade_pnl = (price - trade.entry_price) * close_qty
+        
+        if trade.side == 'LONG':
+            trade_pnl = (price - trade.entry_price) * close_qty
+        else: # SHORT
+            trade_pnl = (trade.entry_price - price) * close_qty
         
         # Commission
         commission = (trade.entry_price * close_qty * config.COMMISSION_RATE) + \
@@ -127,7 +139,12 @@ class Backtester:
             # Mark-to-market PnL for open position
             unrealized_pnl = 0
             if self.current_trade:
-                unrealized_pnl = (row['close'] - self.current_trade.entry_price) * self.current_trade.size
+                t = self.current_trade
+                if t.side == 'LONG':
+                    unrealized_pnl = (row['close'] - t.entry_price) * t.size
+                else:
+                    unrealized_pnl = (t.entry_price - row['close']) * t.size
+            
             self.equity_curve.append({'time': timestamp, 'equity': self.capital + unrealized_pnl})
 
             # Check Risk Stops
@@ -137,9 +154,6 @@ class Backtester:
                 
             if self.daily_realized_pnl <= config.MAX_DAILY_LOSS:
                 self.stop_trading_today = True
-                # If we have an open position, we might need to close it instantly? 
-                # Usually "Stop Hand" means no NEW trades. Existing trades manage themselves.
-                # We will assume existing trades continue.
             
             if self.consecutive_losses >= config.MAX_CONSECUTIVE_LOSS:
                 self.stop_trading_today = True
@@ -148,44 +162,78 @@ class Backtester:
             if self.current_trade:
                 t = self.current_trade
                 
-                # Check SL
-                if row['low'] <= t.sl_price:
-                    self.close_trade(t, t.sl_price, 'SL', timestamp)
-                    prev_row = row
-                    continue
-                
-                # Check TP1
-                if not t.tp1_filled and row['high'] >= t.tp1_price:
-                    # Execute TP1
-                    self.close_trade(t, t.tp1_price, 'TP1', timestamp, pct=config.TP1_CLOSE_PCT)
-                    t.tp1_filled = True
-                    if config.MOVE_SL_TO_BE_AFTER_TP1:
-                        t.sl_price = t.entry_price # Move SL to BE
-                
-                # Check TP2
-                if t.tp1_filled and row['high'] >= t.tp2_price:
-                    self.close_trade(t, t.tp2_price, 'TP2', timestamp, pct=1.0) # Close Rest
-                    prev_row = row
-                    continue
+                if t.side == 'LONG':
+                    # Check SL (Low hits SL)
+                    if row['low'] <= t.sl_price:
+                        self.close_trade(t, t.sl_price, 'SL', timestamp)
+                        prev_row = row
+                        continue
+                    
+                    # Check TP1 (High hits TP)
+                    if not t.tp1_filled and row['high'] >= t.tp1_price:
+                        self.close_trade(t, t.tp1_price, 'TP1', timestamp, pct=config.TP1_CLOSE_PCT)
+                        t.tp1_filled = True
+                        if config.MOVE_SL_TO_BE_AFTER_TP1:
+                            t.sl_price = t.entry_price 
+                    
+                    # Check TP2
+                    if t.tp1_filled and row['high'] >= t.tp2_price:
+                        self.close_trade(t, t.tp2_price, 'TP2', timestamp, pct=1.0)
+                        prev_row = row
+                        continue
+
+                else: # SHORT
+                    # Check SL (High hits SL)
+                    if row['high'] >= t.sl_price:
+                        self.close_trade(t, t.sl_price, 'SL', timestamp)
+                        prev_row = row
+                        continue
+                    
+                    # Check TP1 (Low hits TP)
+                    if not t.tp1_filled and row['low'] <= t.tp1_price:
+                        self.close_trade(t, t.tp1_price, 'TP1', timestamp, pct=config.TP1_CLOSE_PCT)
+                        t.tp1_filled = True
+                        if config.MOVE_SL_TO_BE_AFTER_TP1:
+                            t.sl_price = t.entry_price 
+                    
+                    # Check TP2
+                    if t.tp1_filled and row['low'] <= t.tp2_price:
+                        self.close_trade(t, t.tp2_price, 'TP2', timestamp, pct=1.0)
+                        prev_row = row
+                        continue
 
             # --- Check Entry Signal ---
             # Only if no open trade and not stopped for day
             if not self.current_trade and not self.stop_trading_today and self.daily_trades_count < config.MAX_TRADES_PER_DAY:
                 
                 signal = strategy.check_signal(row, prev_row)
+                entry_price = row['close']
                 
                 if signal == 'LONG':
-                    # Entry Logic
-                    entry_price = row['close']
-                    sl_dist = entry_price * config.SL_PCT
-                    sl_price = entry_price - sl_dist
+                    if config.USE_ATR_FOR_SL and not pd.isna(row['atr']):
+                        sl_dist = row['atr'] * config.ATR_SL_MULTIPLIER
+                    else:
+                        sl_dist = entry_price * config.SL_PCT
                     
+                    sl_price = entry_price - sl_dist
                     qty = self.calculate_position_size(entry_price, sl_price)
                     
                     if qty > 0:
-                        self.current_trade = Trade(timestamp, entry_price, sl_price, qty, config.SL_PCT)
+                        self.current_trade = Trade(timestamp, entry_price, sl_price, qty, config.SL_PCT, side='LONG')
                         self.daily_trades_count += 1
-                        # print(f"Entered LONG at {entry_price} on {timestamp}")
+                
+                elif signal == 'SHORT':
+                    if config.USE_ATR_FOR_SL and not pd.isna(row['atr']):
+                        sl_dist = row['atr'] * config.ATR_SL_MULTIPLIER
+                    else:
+                        sl_dist = entry_price * config.SL_PCT
+                        
+                    sl_price = entry_price + sl_dist 
+                    qty = self.calculate_position_size(entry_price, sl_price)
+                    
+                    if qty > 0:
+                        self.current_trade = Trade(timestamp, entry_price, sl_price, qty, config.SL_PCT, side='SHORT')
+                        self.daily_trades_count += 1
 
             prev_row = row
 

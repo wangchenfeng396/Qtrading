@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timedelta
 import sys
 import os
+import requests
 
 # Ensure we can import from src
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -18,9 +19,49 @@ class LiveBot:
             'options': {'defaultType': 'future'} # Use futures market data usually matches spot but good for volume
         })
         self.symbol = 'BTC/USDT'
-        self.risk_per_trade = config.RISK_PER_TRADE_AMOUNT
+        self.risk_pct = config.RISK_PER_TRADE_PCT
         self.sl_pct = config.SL_PCT
+        # For live trading, we should ideally fetch balance. 
+        # For now, we simulate with config.INITIAL_CAPITAL or a fixed base.
+        self.capital = config.INITIAL_CAPITAL 
         
+    def send_notification(self, title, message):
+        """Send notifications via configured channels (Bark, Telegram)"""
+        if not config.NOTIFICATION_ENABLED:
+            return
+
+        channels = config.NOTIFICATION_CHANNELS
+        if isinstance(channels, str):
+            channels = [channels]
+
+        # 1. Bark Notification
+        if 'bk' in channels and config.BARK_URL:
+            try:
+                # Bark format: URL/title/body
+                # Ensure URL ends with /
+                base_url = config.BARK_URL.rstrip('/')
+                # URL encode is handled by requests usually, but direct path construction needs care
+                # Better to use POST or GET params
+                url = f"{base_url}/{title}/{message}"
+                requests.get(url, timeout=5)
+                print(f"🔔 Bark notification sent.")
+            except Exception as e:
+                print(f"❌ Bark notification failed: {e}")
+
+        # 2. Telegram Notification
+        if 'tg' in channels and config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
+            try:
+                tg_url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
+                payload = {
+                    'chat_id': config.TELEGRAM_CHAT_ID,
+                    'text': f"*{title}*\n{message}",
+                    'parse_mode': 'Markdown'
+                }
+                requests.post(tg_url, json=payload, timeout=5)
+                print(f"🔔 Telegram notification sent.")
+            except Exception as e:
+                print(f"❌ Telegram notification failed: {e}")
+
     def fetch_candles(self, timeframe, limit=100):
         """Fetch latest candles from Binance"""
         try:
@@ -59,48 +100,84 @@ class LiveBot:
         df_5m['ema20'] = strategy.calculate_ema(df_5m['close'], 20)
         
         # Trigger Logic: 
-        # Previous closed candle (index -2) was <= EMA
-        # Current closed candle (index -1, just finished) is > EMA
-        # Note: In live loop, we run just after a candle closes.
-        # So df_5m.iloc[-1] is the candle that JUST closed.
-        
         current_close = df_5m.iloc[-1]['close']
         current_ema = df_5m.iloc[-1]['ema20']
         prev_close = df_5m.iloc[-2]['close']
         prev_ema = df_5m.iloc[-2]['ema20']
         
+        # Calculate RSI & ATR (using manual functions from strategy for consistency)
+        # Note: We need enough data for ATR period=14. fetch_candles default limit=100 is enough.
+        # But strategy.calculate_atr expects a DataFrame.
+        df_5m['rsi'] = strategy.calculate_rsi(df_5m['close'], period=config.RSI_PERIOD)
+        df_5m['atr'] = strategy.calculate_atr(df_5m, period=config.ATR_PERIOD)
+        
+        current_rsi = df_5m.iloc[-1]['rsi']
+        current_atr = df_5m.iloc[-1]['atr']
+
+        # Long Trigger: Cross Over
         trigger_long = (current_close > current_ema) and (prev_close <= prev_ema)
+        # Short Trigger: Cross Under
+        trigger_short = (current_close < current_ema) and (prev_close >= prev_ema)
+        
+        # RSI Filter
+        rsi_ok_long = current_rsi < config.RSI_OVERBOUGHT
+        rsi_ok_short = current_rsi > config.RSI_OVERSOLD
 
         return {
             'price': current_close,
-            'trend_1h': trend_ok,
-            'trend_1h_val': df_1h.iloc[-2]['ema50'],
-            'setup_15m': pullback_ok,
-            'setup_15m_val': df_15m.iloc[-2]['ema20'],
-            'trigger_5m': trigger_long,
-            'trigger_val': current_ema
+            # Long Indicators
+            'trend_up': df_1h.iloc[-2]['close'] > df_1h.iloc[-2]['ema50'],
+            'setup_long': df_15m.iloc[-2]['close'] < df_15m.iloc[-2]['ema20'],
+            'trigger_long': trigger_long,
+            'rsi_ok_long': rsi_ok_long,
+            
+            # Short Indicators
+            'trend_down': df_1h.iloc[-2]['close'] < df_1h.iloc[-2]['ema50'],
+            'setup_short': df_15m.iloc[-2]['close'] > df_15m.iloc[-2]['ema20'],
+            'trigger_short': trigger_short,
+            'rsi_ok_short': rsi_ok_short,
+            
+            # Values for logging
+            'ema_1h': df_1h.iloc[-2]['ema50'],
+            'ema_15m': df_15m.iloc[-2]['ema20'],
+            'ema_5m': current_ema,
+            'rsi': current_rsi,
+            'atr': current_atr
         }
 
-    def calculate_trade_params(self, entry_price):
-        sl_dist = entry_price * self.sl_pct
-        sl_price = entry_price - sl_dist
+    def calculate_trade_params(self, entry_price, side='LONG', atr=None):
+        if config.USE_ATR_FOR_SL and atr:
+            sl_dist = atr * config.ATR_SL_MULTIPLIER
+        else:
+            sl_dist = entry_price * self.sl_pct
         
-        risk_per_unit = entry_price - sl_price
-        qty = self.risk_per_trade / risk_per_unit
+        if side == 'LONG':
+            sl_price = entry_price - sl_dist
+            risk_per_unit = entry_price - sl_price
+            tp1_price = entry_price + (risk_per_unit * config.TP1_RATIO)
+            tp2_price = entry_price + (risk_per_unit * config.TP2_RATIO)
+        else: # SHORT
+            sl_price = entry_price + sl_dist
+            risk_per_unit = sl_price - entry_price
+            tp1_price = entry_price - (risk_per_unit * config.TP1_RATIO)
+            tp2_price = entry_price - (risk_per_unit * config.TP2_RATIO)
         
-        tp1_price = entry_price + (risk_per_unit * config.TP1_RATIO)
-        tp2_price = entry_price + (risk_per_unit * config.TP2_RATIO)
+        # Risk Calculation
+        risk_amount = self.capital * self.risk_pct
+        qty = risk_amount / risk_per_unit
         
         return {
             'qty': qty,
             'sl': sl_price,
             'tp1': tp1_price,
-            'tp2': tp2_price
+            'tp2': tp2_price,
+            'side': side
         }
 
     def run(self):
         print(f"🚀 Qtrading Live Bot Started | Symbol: {self.symbol}")
-        print(f"Risk: ${self.risk_per_trade} | 1H+15m+5m Strategy")
+        print(f"Risk: {self.risk_pct*100}% of Capital (${self.capital}) | 1H+15m+5m Strategy (Bi-directional)")
+        print(f"Filters: RSI<{config.RSI_OVERBOUGHT}(L)/>{config.RSI_OVERSOLD}(S) | SL: ATR*{config.ATR_SL_MULTIPLIER}")
         print("Waiting for next 5m candle close...\n")
 
         while True:
@@ -126,34 +203,47 @@ class LiveBot:
                 
             # 3. Print Status
             price = data['price']
-            status_symbol = "✅" if data['trend_1h'] else "❌"
-            setup_symbol = "✅" if data['setup_15m'] else "❌"
-            trigger_symbol = "🔥" if data['trigger_5m'] else "Waiting"
             
-            print(f"  Price: ${price:.2f}")
-            print(f"  1H Trend (> EMA50):  {status_symbol} (EMA: {data['trend_1h_val']:.2f})")
-            print(f"  15m Setup (< EMA20): {setup_symbol} (EMA: {data['setup_15m_val']:.2f})")
-            print(f"  5m Trigger (Cross):  {trigger_symbol}")
-
-            # 4. Check Signal
-            if data['trend_1h'] and data['setup_15m'] and data['trigger_5m']:
-                print("\n" + "="*40)
-                print(f"🚀 LONG SIGNAL DETECTED!")
-                print("="*40)
-                
-                params = self.calculate_trade_params(price)
-                
-                print(f"🔵 ENTRY:   ${price:.2f} (Market)")
-                print(f"🛑 STOP:    ${params['sl']:.2f} (-1.2%)")
-                print(f"🎯 TP1:     ${params['tp1']:.2f} (Sell 50%, Move SL to Entry)")
-                print(f"🎯 TP2:     ${params['tp2']:.2f} (Close All)")
-                print(f"⚖️ SIZE:    {params['qty']:.5f} BTC")
-                print(f"💵 VALUE:   ${params['qty']*price:.2f} (Lev 5x: ${params['qty']*price/5:.2f} Margin)")
-                print("="*40 + "\n")
-                
-                # Optional: Send notification here
+            # Status Logic
+            trend = "BULL" if data['trend_up'] else ("BEAR" if data['trend_down'] else "NEUTRAL")
+            
+            print(f"  Price: ${price:.2f} | RSI: {data['rsi']:.1f} | ATR: {data['atr']:.2f}")
+            print(f"  Trend (1H): {trend} (EMA50: {data['ema_1h']:.2f})")
+            
+            # Check Long
+            if data['trend_up'] and data['setup_long'] and data['trigger_long'] and data['rsi_ok_long']:
+                self.execute_signal(price, 'LONG', data['atr'])
+            # Check Short
+            elif data['trend_down'] and data['setup_short'] and data['trigger_short'] and data['rsi_ok_short']:
+                self.execute_signal(price, 'SHORT', data['atr'])
             else:
                 print("  >> No signal yet.")
+
+    def execute_signal(self, price, side, atr):
+        print("\n" + "="*40)
+        print(f"🚀 {side} SIGNAL DETECTED!")
+        print("="*40)
+        
+        params = self.calculate_trade_params(price, side, atr)
+        
+        print(f"🔵 ENTRY:   ${price:.2f} (Market)")
+        print(f"🛑 STOP:    ${params['sl']:.2f} (ATR Based)")
+        print(f"🎯 TP1:     ${params['tp1']:.2f} ({config.TP1_RATIO}R)")
+        print(f"🎯 TP2:     ${params['tp2']:.2f} ({config.TP2_RATIO}R)")
+        print(f"⚖️ SIZE:    {params['qty']:.5f} BTC")
+        print(f"💵 VALUE:   ${params['qty']*price:.2f}")
+        print("="*40 + "\n")
+        
+        # Send Notification
+        msg_title = f"🚀 BTC/USDT {side} SIGNAL"
+        msg_body = (
+            f"Price: ${price:.2f}\n"
+            f"Stop: ${params['sl']:.2f}\n"
+            f"TP1: ${params['tp1']:.2f}\n"
+            f"TP2: ${params['tp2']:.2f}\n"
+            f"Size: {params['qty']:.5f} BTC"
+        )
+        self.send_notification(msg_title, msg_body)
 
 if __name__ == "__main__":
     bot = LiveBot()
