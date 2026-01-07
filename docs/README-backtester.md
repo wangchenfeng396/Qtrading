@@ -1,5 +1,13 @@
   文件结构说明
 
+   * config.py: 策略与风控配置。
+   * data_loader.py: 高效的 ClickHouse 数据聚合引擎。
+   * strategy.py: 策略逻辑（1H趋势 + 15m回踩 + 5m触发）。
+   * backtester.py: 核心回测逻辑与资金管理。
+   * main.py: 主程序，生成交互式中文报告。
+   * download_to_clickhouse.py: 数据下载与入库工具（支持按月）。
+   * test_clickhouse.py: 数据库连接测试工具。
+
    1. `config.py`:
        * 定义了您严格的风控规则：$50 本金, $0.50 (1%) 单笔风险, 5x 杠杆。
        * 定义了止盈策略：1R 减半推保本，2R 出清。

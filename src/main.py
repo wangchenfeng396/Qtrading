@@ -120,7 +120,7 @@ def main():
         output_file = "backtest_report.html"
         
         # Generate the Plotly div with embedded JavaScript (approx 3MB, but works offline)
-        plot_div = fig.to_html(full_html=False, include_plotly=True, config={'displayModeBar': True, 'responsive': True})
+        plot_div = fig.to_html(full_html=False, include_plotlyjs=True, config={'displayModeBar': True, 'responsive': True})
         
         # Determine PnL Label and Class
         pnl_label = "总收益" if total_pnl >= 0 else "总亏损"

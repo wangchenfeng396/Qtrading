@@ -194,7 +194,13 @@ class Backtester:
 
     def get_stats(self):
         if not self.trades:
-            return "No trades executed."
+            return {
+                'Final Capital': self.capital,
+                'Total Trades': 0,
+                'Win Rate': "0.00%",
+                'Total PnL': "$0.00",
+                'Max Drawdown': "0.00%"
+            }
         
         df_t = pd.DataFrame([vars(t) for t in self.trades])
         total_trades = len(df_t)

@@ -35,3 +35,5 @@ coverage.xml
 .pytype
 .pytest_cache/
 .pyright
+backtest_report.html
+backtest_trades.csv
