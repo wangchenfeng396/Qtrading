@@ -1,4 +1,4 @@
 ccxt
 pandas
 clickhouse-connect
-requests
+plotly

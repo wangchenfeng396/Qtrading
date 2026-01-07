@@ -7,11 +7,12 @@ from datetime import datetime, timedelta
 import os
 import shutil
 import sys
+import argparse
 
 # --- Configuration ---
 SYMBOL = 'BTCUSDT'
 TIMEFRAME = '1s'
-START_DATE = datetime(2021, 1, 1) # Start from Jan 2021
+START_DATE = datetime(2025, 1, 1) # Start from Jan 2025
 END_DATE = datetime.now()
 TEMP_DIR = 'temp_download'
 
@@ -59,6 +60,25 @@ def download_file(url, desc):
     return data
 
 def download_and_ingest():
+    # Parse Arguments
+    parser = argparse.ArgumentParser(description="Download Binance 1s data to ClickHouse")
+    parser.add_argument('--month', type=str, help='Specific month to download (YYYY-MM), e.g., 2023-01')
+    args = parser.parse_args()
+
+    # Determine Date Range
+    if args.month:
+        try:
+            target_date = datetime.strptime(args.month, '%Y-%m')
+            # For a single month
+            all_months = [target_date]
+            print(f">>> Task Started: Single Month Mode: {args.month}")
+        except ValueError:
+            print("❌ Invalid date format. Use YYYY-MM")
+            return
+    else:
+        all_months = get_month_list(START_DATE, END_DATE)
+        print(f">>> Task Started: Downloading {TIMEFRAME} data for {len(all_months)} months.")
+
     # 1. Setup ClickHouse
     try:
         client = clickhouse_connect.get_client(
@@ -93,15 +113,13 @@ def download_and_ingest():
         print(f"❌ Failed to connect to ClickHouse: {e}")
         return
 
-    # 2. Setup Temp Dir and Month List
+    # 2. Setup Temp Dir
     if not os.path.exists(TEMP_DIR):
         os.makedirs(TEMP_DIR)
     
-    all_months = get_month_list(START_DATE, END_DATE)
     total_months = len(all_months)
     total_records_all = 0
 
-    print(f">>> Task Started: Downloading {TIMEFRAME} data for {total_months} months.")
     print("-" * 60)
 
     # 3. Iterate Months
@@ -139,6 +157,15 @@ def download_and_ingest():
                 print(f"  [Ingest] Reading {csv_filename}...", end='', flush=True)
                 df = pd.read_csv(csv_path, names=columns)
                 df.drop(columns=['ignore'], inplace=True)
+                
+                # Fix: Check for microsecond timestamps (16 digits) vs millisecond (13 digits)
+                # Year 2262 (Pandas max) is approx 9.2e12 ms.
+                # If values are larger than 1e14, they are likely microseconds.
+                if not df.empty and df['open_time'].max() > 100000000000000: # > 1e14
+                    print(" (Detected microsecond timestamps, adjusting...)", end='')
+                    df['open_time'] = df['open_time'] // 1000
+                    df['close_time'] = df['close_time'] // 1000
+
                 df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
                 df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
                 print(f" Done ({len(df)} rows).")
