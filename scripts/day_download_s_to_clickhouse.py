@@ -17,6 +17,10 @@ CLICKHOUSE_PORT = 18123
 CLICKHOUSE_USER = 'default'
 CLICKHOUSE_PASSWORD = 'uming'
 
+# Proxy Configuration (Optional)
+# e.g., "http://127.0.0.1:7890"
+PROXY_URL = "" 
+
 def fetch_and_store_daily_data():
     # Parse Arguments
     parser = argparse.ArgumentParser(description="Fetch daily 1s data from Binance API to ClickHouse")
@@ -74,9 +78,17 @@ def fetch_and_store_daily_data():
         end_timestamp = int(datetime.now().timestamp() * 1000)
 
     # 3. Setup Exchange
-    exchange = ccxt.binance({
+    exchange_config = {
         'enableRateLimit': True,
-    })
+    }
+    if PROXY_URL:
+        exchange_config['proxies'] = {
+            'http': PROXY_URL,
+            'https': PROXY_URL
+        }
+        print(f"🌐 Using Proxy: {PROXY_URL}")
+        
+    exchange = ccxt.binance(exchange_config)
     
     print(f">>> Fetching range: {datetime.fromtimestamp(start_timestamp/1000)} to {datetime.fromtimestamp(end_timestamp/1000)}")
 

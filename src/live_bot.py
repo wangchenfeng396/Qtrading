@@ -14,10 +14,20 @@ import strategy
 
 class LiveBot:
     def __init__(self):
-        self.exchange = ccxt.binance({
+        exchange_config = {
             'enableRateLimit': True,
             'options': {'defaultType': 'future'} # Use futures market data usually matches spot but good for volume
-        })
+        }
+        
+        # Apply Proxy if configured
+        if config.PROXY_URL:
+            exchange_config['proxies'] = {
+                'http': config.PROXY_URL,
+                'https': config.PROXY_URL
+            }
+            print(f"🌐 Using Proxy: {config.PROXY_URL}")
+
+        self.exchange = ccxt.binance(exchange_config)
         self.symbol = 'BTC/USDT'
         self.risk_pct = config.RISK_PER_TRADE_PCT
         self.sl_pct = config.SL_PCT
@@ -175,10 +185,10 @@ class LiveBot:
         }
 
     def run(self):
-        print(f"🚀 Qtrading Live Bot Started | Symbol: {self.symbol}")
-        print(f"Risk: {self.risk_pct*100}% of Capital (${self.capital}) | 1H+15m+5m Strategy (Bi-directional)")
-        print(f"Filters: RSI<{config.RSI_OVERBOUGHT}(L)/>{config.RSI_OVERSOLD}(S) | SL: ATR*{config.ATR_SL_MULTIPLIER}")
-        print("Waiting for next 5m candle close...\n")
+        print(f"🚀 Qtrading 实盘机器人已启动 | 交易对: {self.symbol}")
+        print(f"风险设置: {self.risk_pct*100}% 资金/笔 (当前本金 ${self.capital}) | 策略: 1H趋势+15m震荡+5m突破 (双向)")
+        print(f"过滤条件: RSI<{config.RSI_OVERBOUGHT}(多)/>{config.RSI_OVERSOLD}(空) | 止损: ATR*{config.ATR_SL_MULTIPLIER}")
+        print("等待下一个 5分钟K线 收盘...\n")
 
         while True:
             # 1. Sync with time
@@ -190,25 +200,25 @@ class LiveBot:
             # Add a small buffer (e.g., 3 seconds) to ensure exchange has data
             sleep_time = seconds_to_wait + 3
             
-            print(f"💤 Sleeping {int(sleep_time)}s until {next_run.strftime('%H:%M:%S')}...")
+            print(f"💤 休眠 {int(sleep_time)}秒 直到 {next_run.strftime('%H:%M:%S')}...")
             time.sleep(sleep_time)
             
             # 2. Execute Logic
-            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Checking Market...")
+            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 正在检查市场...")
             
             data = self.get_latest_indicators()
             if not data:
-                print("⚠️ Data fetch failed, retrying next cycle.")
+                print("⚠️ 数据获取失败，将在下一个周期重试。")
                 continue
                 
             # 3. Print Status
             price = data['price']
             
             # Status Logic
-            trend = "BULL" if data['trend_up'] else ("BEAR" if data['trend_down'] else "NEUTRAL")
+            trend = "多头" if data['trend_up'] else ("空头" if data['trend_down'] else "震荡")
             
-            print(f"  Price: ${price:.2f} | RSI: {data['rsi']:.1f} | ATR: {data['atr']:.2f}")
-            print(f"  Trend (1H): {trend} (EMA50: {data['ema_1h']:.2f})")
+            print(f"  价格: ${price:.2f} | RSI: {data['rsi']:.1f} | ATR: {data['atr']:.2f}")
+            print(f"  趋势 (1H): {trend} (EMA50: {data['ema_1h']:.2f})")
             
             # Check Long
             if data['trend_up'] and data['setup_long'] and data['trigger_long'] and data['rsi_ok_long']:
@@ -217,31 +227,32 @@ class LiveBot:
             elif data['trend_down'] and data['setup_short'] and data['trigger_short'] and data['rsi_ok_short']:
                 self.execute_signal(price, 'SHORT', data['atr'])
             else:
-                print("  >> No signal yet.")
+                print("  >> 暂无信号。")
 
     def execute_signal(self, price, side, atr):
+        side_cn = "做多" if side == 'LONG' else "做空"
         print("\n" + "="*40)
-        print(f"🚀 {side} SIGNAL DETECTED!")
+        print(f"🚀 {side_cn} 信号触发！")
         print("="*40)
         
         params = self.calculate_trade_params(price, side, atr)
         
-        print(f"🔵 ENTRY:   ${price:.2f} (Market)")
-        print(f"🛑 STOP:    ${params['sl']:.2f} (ATR Based)")
-        print(f"🎯 TP1:     ${params['tp1']:.2f} ({config.TP1_RATIO}R)")
-        print(f"🎯 TP2:     ${params['tp2']:.2f} ({config.TP2_RATIO}R)")
-        print(f"⚖️ SIZE:    {params['qty']:.5f} BTC")
-        print(f"💵 VALUE:   ${params['qty']*price:.2f}")
+        print(f"🔵 开仓价:   ${price:.2f} (市价)")
+        print(f"🛑 止损价:   ${params['sl']:.2f} (ATR动态)")
+        print(f"🎯 止盈一:   ${params['tp1']:.2f} ({config.TP1_RATIO}R)")
+        print(f"🎯 止盈二:   ${params['tp2']:.2f} ({config.TP2_RATIO}R)")
+        print(f"⚖️ 仓位量:   {params['qty']:.5f} BTC")
+        print(f"💵 总价值:   ${params['qty']*price:.2f}")
         print("="*40 + "\n")
         
         # Send Notification
-        msg_title = f"🚀 BTC/USDT {side} SIGNAL"
+        msg_title = f"🚀 BTC/USDT {side_cn} 信号"
         msg_body = (
-            f"Price: ${price:.2f}\n"
-            f"Stop: ${params['sl']:.2f}\n"
+            f"价格: ${price:.2f}\n"
+            f"止损: ${params['sl']:.2f}\n"
             f"TP1: ${params['tp1']:.2f}\n"
             f"TP2: ${params['tp2']:.2f}\n"
-            f"Size: {params['qty']:.5f} BTC"
+            f"仓位: {params['qty']:.5f} BTC"
         )
         self.send_notification(msg_title, msg_body)
 

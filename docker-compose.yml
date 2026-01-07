@@ -1,0 +1,20 @@
+services:
+  qtrading-bot:
+    build: .
+    container_name: qtrading_bot
+    restart: unless-stopped
+    # 挂载 logs 和 output 目录，方便在宿主机查看
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+    # 如果您的 ClickHouse 部署在宿主机，Host 网络模式最方便连接
+    # (Linux 适用; Mac/Windows 可能需要用 host.docker.internal 替换 127.0.0.1)
+    network_mode: "host" 
+    
+    # 环境变量覆盖 (可选，覆盖 config.py 中的默认值)
+    environment:
+      - TZ=Asia/Shanghai
+      # - PROXY_URL=http://127.0.0.1:7890 
+    
+    # 默认运行实盘，如果想运行其他脚本，可以在启动时覆盖 command
+    # command: python src/live_bot.py

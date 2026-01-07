@@ -49,7 +49,13 @@ SOURCE_TABLE = 'btc_usdt_1s'
 
 # --- 消息推送设置 ---
 NOTIFICATION_ENABLED = True
-NOTIFICATION_CHANNELS = ['bk'] 
-BARK_URL = "https://api.day.app/YOUR_KEY/"
+NOTIFICATION_CHANNELS = ['bk']  # 可选: 'telegram', 'bk'
+BARK_URL = "http://192.168.66.10:10009//myhFXFuNtus7kJHQsBWdzi/"
 TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"
 TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
+
+# --- 网络设置 (代理) ---
+# 如果您在中国大陆或其他无法直接访问 Binance 的地区，请设置 HTTP 代理
+# 格式示例: "http://127.0.0.1:7890"
+PROXY_URL = "http://192.168.66.6:19091"  # 设置为 None 则不使用代理
+

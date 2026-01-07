@@ -1,0 +1,29 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env
+venv
+.env
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Project specific
+temp_download
+output
+*.db
+*.sqlite
+backtest_report.html
+fetch.log
+logs/
+
+# IDE
+.idea
+.vscode
+.DS_Store
