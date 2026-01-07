@@ -12,7 +12,7 @@ def fetch_and_store_data():
     })
 
     symbol = 'BTC/USDT'
-    timeframe = '1m'  # 1 minute data
+    timeframe = '11'  # 1 minute data
     limit = 1000      # Max items per request for Binance
     
     # 2. Calculate Start Time (5 years ago)

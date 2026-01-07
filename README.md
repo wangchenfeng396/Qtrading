@@ -1,31 +1,59 @@
-# Qtrading
+# Qtrading 量化交易系统
 
-## 获取历史数据
+这是一个基于 Python 和 ClickHouse 的高频量化交易系统，专注于 BTC/USDT 的趋势回踩策略。
 
+## 📁 目录结构
 
-### fetch_date.py 
-每天获取一次1m-udst/btc交易对
+*   `src/`: 核心代码
+    *   `main.py`: 回测主程序 (入口)
+    *   `backtester.py`: 回测引擎与资金管理
+    *   `strategy.py`: 策略逻辑 (EMA 趋势 + 回踩)
+    *   `live_bot.py`: 实盘信号生成器 (Live)
+    *   `data_loader.py`: 数据加载与聚合
+*   `scripts/`: 工具脚本
+    *   `month_download_s_to_clickhouse.py`: 下载历史数据 (按月 ZIP)
+    *   `day_download_s_to_clickhouse.py`: 下载补全数据 (按日 API)
+    *   `fetch_data.py`: 旧版数据下载 (备份)
+    *   `test_clickhouse.py`: 数据库连接测试
+*   `docs/`: 文档说明
+    *   `trading_strategy.md`: **交易策略详细说明书** (推荐阅读)
+    *   `README-backtester.md`: 回测系统说明
 
-### download_to_clickhouse.py
-每月获取一次1s-udst/btc交易对
-- todo
+## 🚀 快速开始
 
-1.使用download_to_clickhouse.py  2022-07，下载单月数据
-失败的月份2025-01、2025-02、2025-03、2025-04、2025-05、2025-06、2025-07、2025-08、2025-09、2025-10、2025-11、2025-12
+### 1. 环境准备
+```bash
+# 创建并激活虚拟环境
+python3 -m venv venv
+source venv/bin/activate
 
-## 编写交易方法
+# 安装依赖
+pip install -r requirements.txt
+```
 
-###  15m 日内 + 1H 趋势过滤 + 5m 触发 的“顺势回踩”策略
- Python 回测代码（基于 ccxt + pandas），实现你这套 15m 日内 + 1H 趋势过滤 + 5m 触发 的“顺势回踩”策略，并且严格按你设定的风控：
+### 2. 数据准备
+确保本地安装并运行 ClickHouse (默认端口 8123)。
 
-    •    资金：$50（含备用金）
-    •    杠杆：5x（用于计算保证金占用；回测以USDT线性合约方式计算盈亏）
-    •    每笔风险：$0.50（=1%）
-    •    止损距离：默认 1.2%（可切 1.0%）
-    •    1R 减半，剩余推保本，2R 出清
-    •    每天最多 3 笔；日亏 -$1.50 停手；连亏 3 单停手
-    •    只做usdt/btc
+```bash
+# 方式一：下载历史月份数据 (推荐)
+python scripts/month_download_s_to_clickhouse.py --month 2024-01
 
-## 通过数据库回测方法
+# 方式二：下载指定日期数据 (补全)
+python scripts/day_download_s_to_clickhouse.py --date 2026-01-06
+```
 
-## 对接tg机器人 提醒买入卖出
+### 3. 运行回测
+```bash
+# 运行指定时间段的回测
+python src/main.py --start 2024-01-01 --end 2024-01-07
+```
+运行后会生成交互式报告 `backtest_report.html`。
+
+### 4. 实盘信号
+```bash
+python src/live_bot.py
+```
+
+## 📊 策略简介
+采用 **1H 趋势过滤 + 15m 回踩等待 + 5m 信号触发** 的顺势交易逻辑。
+详细说明请参阅 [docs/trading_strategy.md](docs/trading_strategy.md)。
