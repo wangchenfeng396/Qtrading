@@ -8,7 +8,7 @@ COMMISSION_RATE = 0.0005    # 手续费 (万5, 币安标准)
 # --- 风控设置 (严格) ---
 RISK_PER_TRADE_AMOUNT = 0.50 # 单笔亏损金额 ($0.50)
 SL_PCT = 0.012               # 默认止损幅度 (1.2%)
-MAX_TRADES_PER_DAY = 3       # 每天最多交易次数
+MAX_TRADES_PER_DAY = 5       # 每天最多交易次数
 MAX_DAILY_LOSS = -1.50       # 单日最大亏损 (达到则停手)
 MAX_CONSECUTIVE_LOSS = 3     # 最大连亏次数 (达到则停手)
 

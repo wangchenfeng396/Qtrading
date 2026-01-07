@@ -125,6 +125,9 @@ def main():
         # Determine PnL Label and Class
         pnl_label = "总收益" if total_pnl >= 0 else "总亏损"
         pnl_class = "positive" if total_pnl >= 0 else "negative"
+        
+        # Calculate ROI
+        roi_pct = (total_pnl / config.INITIAL_CAPITAL) * 100
 
         # Custom HTML template for better layout
         html_content = f"""
@@ -137,7 +140,7 @@ def main():
                 .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
                 h1 {{ text-align: center; color: #333; margin-bottom: 5px; }}
                 .subtitle {{ text-align: center; color: #666; margin-bottom: 30px; font-size: 0.9em; }}
-                .metrics-grid {{ display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; margin-bottom: 30px; }}
+                .metrics-grid {{ display: grid; grid-template-columns: repeat(6, 1fr); gap: 15px; margin-bottom: 30px; }}
                 .metric-card {{ background: #f8f9fa; padding: 15px; border-radius: 6px; text-align: center; border: 1px solid #e9ecef; }}
                 .metric-value {{ font-size: 20px; font-weight: bold; color: #2c3e50; margin: 5px 0; }}
                 .metric-label {{ font-size: 13px; color: #7f8c8d; }}
@@ -159,6 +162,10 @@ def main():
                     <div class="metric-card">
                         <div class="metric-label">{pnl_label}</div>
                         <div class="metric-value {pnl_class}">${total_pnl:.2f}</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-label">总盈亏%</div>
+                        <div class="metric-value {pnl_class}">{roi_pct:+.2f}%</div>
                     </div>
                     <div class="metric-card">
                         <div class="metric-label">总盈利次数</div>
