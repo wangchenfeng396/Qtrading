@@ -1,34 +1,44 @@
-使用Python 脚本，使用 ccxt 库从币安（Binance）获取了 BTC/USDT 过去 5 年的日线数据（OHLCV），并将其存储到了 SQLite 数据库中。
+# 数据下载脚本说明
 
-  以下是详细的操作步骤和结果：
+`scripts/` 目录下包含用于从币安获取历史数据的工具脚本。
 
-  1. 环境准备
-  我创建了 requirements.txt 文件来管理依赖：
-   1 ccxt
-   2 pandas
-  并为您配置了虚拟环境及安装了相关库。
+## 1. 历史数据下载 (按月)
+`month_download_s_to_clickhouse.py`
 
-  2. Python 脚本 (fetch_data.py)
-  我编写了脚本 fetch_data.py，主要功能如下：
-   * 连接交易所: 使用 ccxt 连接 Binance 公共 API。
-   * 获取数据: 自动计算 5 年前的起始时间，并处理分页（Loop）以获取完整数据。默认使用了 1d (日线) 周期，这样数据量适中且速度快（约 1825 条记录）。
-   * 存储数据: 使用 pandas 处理数据格式，并保存到本地 SQLite 文件 crypto_data.db 中的 btc_usdt_daily 表。
+从 Binance Vision 下载官方归档的 **ZIP 压缩包**，解压并导入 ClickHouse。这是获取大量历史数据最快、最稳定的方式。
 
-  3. 执行结果
-  脚本已成功运行，输出如下：
-   * 数据范围: 2021-01-09 至 2026-01-07
-   * 总记录数: 1825 条
-   * 数据库文件: crypto_data.db (144K)
+*   **用法**:
+    ```bash
+    # 下载指定月份
+    python scripts/month_download_s_to_clickhouse.py --month 2024-01
+    
+    # 默认模式 (下载代码中配置的所有月份)
+    python scripts/month_download_s_to_clickhouse.py
+    ```
 
-  如何查看或再次运行
-  您可以在终端中使用以下命令再次运行脚本或查看数据：
+## 2. 实时数据补全 (按日)
+`day_download_s_to_clickhouse.py`
 
-   1 # 激活虚拟环境并运行脚本
-   2 source venv/bin/activate
-   3 python fetch_data.py
-   4
-   5 # 或者直接使用 sqlite3 查看数据
-   6 sqlite3 crypto_data.db "SELECT * FROM btc_usdt_daily ORDER BY timestamp DESC LIMIT 5;"
+通过币安 API (CCXT) 获取最近的 1秒 K线数据。适用于补充最近几天（Binance Vision 尚未归档）的数据，或每日定时运行保持数据库最新。
 
-  注意: 我默认获取的是 日线 (OHLCV) 数据。如果您需要更精细的“交易记录”（如 1分钟 k线 或 逐笔交易 tick data），数据量会非常庞大（分钟线约
-  260万条），下载时间会显著增加。如果需要调整周期（例如改为 1h），只需修改脚本中的 timeframe = '1d' 为 timeframe = '1h' 即可。
+*   **用法**:
+    ```bash
+    # 下载指定日期 (00:00 - 23:59)
+    python scripts/day_download_s_to_clickhouse.py --date 2026-01-06
+    
+    # 增量模式 (自动从数据库最后一条记录开始下载到当前时间)
+    python scripts/day_download_s_to_clickhouse.py
+    ```
+
+*   **后台运行**:
+    使用根目录下的 `start_download.sh` 可以将其作为后台进程启动，日志记录在 `logs/download.log`。
+
+## 3. 数据库连接测试
+`test_clickhouse.py`
+
+用于验证本地 Python 环境是否能成功连接到 ClickHouse 数据库。
+
+*   **用法**:
+    ```bash
+    python scripts/test_clickhouse.py
+    ```

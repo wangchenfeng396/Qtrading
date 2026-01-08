@@ -10,14 +10,19 @@
     *   `strategy.py`: 策略逻辑 (EMA 趋势 + 回踩)
     *   `live_bot.py`: 实盘信号生成器 (Live)
     *   `data_loader.py`: 数据加载与聚合
+    *   `config.py`: **系统主配置文件** (查看 [配置详解](docs/configuration_guide.md))
+*   `testnet/`: 模拟盘环境
+    *   `config.py`: 模拟盘独立配置
+    *   `run_simulation.py`: 模拟盘运行脚本
 *   `scripts/`: 工具脚本
     *   `month_download_s_to_clickhouse.py`: 下载历史数据 (按月 ZIP)
     *   `day_download_s_to_clickhouse.py`: 下载补全数据 (按日 API)
-    *   `fetch_data.py`: 旧版数据下载 (备份)
     *   `test_clickhouse.py`: 数据库连接测试
+*   `logs/`: 运行日志 (自动生成)
 *   `docs/`: 文档说明
     *   `trading_strategy.md`: **交易策略详细说明书** (推荐阅读)
-    *   `README-backtester.md`: 回测系统说明
+    *   `configuration_guide.md`: 参数配置详解
+    *   `testnet_guide.md`: 模拟盘使用指南
 
 ## 🚀 快速开始
 
@@ -49,11 +54,67 @@ python src/main.py --start 2024-01-01 --end 2024-01-07
 ```
 运行后会生成交互式报告 `backtest_report.html`。
 
-### 4. 实盘信号
+### 4. 实盘运行 (后台模式)
 ```bash
-python src/live_bot.py
+# 启动实盘机器人 (后台运行，日志记录到 logs/live_bot.log)
+./start_live.sh
+
+# 查看实时日志
+tail -f logs/live_bot.log
+```
+
+### 5. 模拟盘实操
+```bash
+# 启动模拟盘 (后台运行)
+./start_simulation.sh
+```
+
+### 6. 自动数据补全
+```bash
+# 启动每日数据下载器 (后台运行)
+./start_download.sh
+```
+
+## 🛠 后台脚本管理
+
+系统提供了三个 Shell 脚本进行后台运行管理。日志分为两层：**应用日志**（记录交易逻辑与信号）和**控制台日志**（记录系统启动信息与原始报错）。
+
+| 启动脚本 | 功能说明 | 应用日志 (结构化) | 控制台/报错日志 (原始) |
+| :--- | :--- | :--- | :--- |
+| `start_live.sh` | **启动实盘机器人** | `logs/live_bot.log` | `logs/console_live.log` |
+| `start_simulation.sh` | **启动模拟盘** | `logs/live_bot.log` | `logs/console_sim.log` |
+| `start_download.sh` | **启动增量下载** | `logs/download.log` | `logs/console_download.log` |
+
+### 常用日志操作
+
+*   **查看核心交易信号 (推荐)**:
+    ```bash
+    tail -f logs/live_bot.log
+    ```
+*   **查看数据同步进度**:
+    ```bash
+    tail -f logs/download.log
+    ```
+*   **启动失败时排查报错**:
+    ```bash
+    # 如果 start_live.sh 运行后程序没动静，检查这个文件
+    cat logs/console_live.log
+    ```
+
+### 停止后台进程
+脚本启动时会显示进程 ID (PID)。若需手动查找并停止：
+```bash
+# 查找正在运行的机器人
+ps -ef | grep live_bot
+
+# 停止进程 (将 <PID> 替换为实际数字)
+kill <PID>
 ```
 
 ## 📊 策略简介
-采用 **1H 趋势过滤 + 15m 回踩等待 + 5m 信号触发** 的顺势交易逻辑。
+采用 **顺势震荡回归 (Trend Mean Reversion)** 逻辑：
+*   **趋势**: 1H EMA 100 过滤大势。
+*   **入场**: 5m RSI 超买/超卖 + 布林带触轨 + K线反转确认。
+*   **风控**: 2% 复利仓位 + ATR 动态止损。
+
 详细说明请参阅 [docs/trading_strategy.md](docs/trading_strategy.md)。

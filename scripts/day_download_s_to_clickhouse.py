@@ -4,7 +4,10 @@ import clickhouse_connect
 from datetime import datetime, timedelta
 import time
 import sys
+import os
 import argparse
+import logging
+from logging.handlers import TimedRotatingFileHandler
 
 # --- Configuration ---
 SYMBOL_BINANCE = 'BTC/USDT'
@@ -18,8 +21,26 @@ CLICKHOUSE_USER = 'default'
 CLICKHOUSE_PASSWORD = 'uming'
 
 # Proxy Configuration (Optional)
-# e.g., "http://127.0.0.1:7890"
 PROXY_URL = "" 
+
+# --- Logging Setup ---
+log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+logger = logging.getLogger("Qtrading_Download")
+logger.setLevel(logging.INFO)
+
+file_handler = TimedRotatingFileHandler(
+    os.path.join(log_dir, 'download.log'), when='midnight', interval=1, backupCount=30, encoding='utf-8'
+)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 
 def fetch_and_store_daily_data():
     # Parse Arguments
@@ -27,7 +48,7 @@ def fetch_and_store_daily_data():
     parser.add_argument('--date', type=str, help='Specific date to download (YYYY-MM-DD), e.g., 2025-01-01')
     args = parser.parse_args()
 
-    print(f"[{datetime.now()}] Starting daily data fetch for {SYMBOL_BINANCE}...")
+    logger.info(f"Starting daily data fetch for {SYMBOL_BINANCE}...")
 
     # 1. Setup ClickHouse
     try:
@@ -39,9 +60,9 @@ def fetch_and_store_daily_data():
         )
         # Verify DB and Table
         client.command(f'CREATE DATABASE IF NOT EXISTS {DB_NAME}')
-        print(">>> Connected to ClickHouse.")
+        logger.info(">>> Connected to ClickHouse.")
     except Exception as e:
-        print(f"❌ ClickHouse Connection Failed: {e}")
+        logger.error(f"❌ ClickHouse Connection Failed: {e}")
         return
 
     # 2. Determine Fetch Range
@@ -52,9 +73,9 @@ def fetch_and_store_daily_data():
             # End of that day (23:59:59.999)
             end_date = target_date + timedelta(days=1) - timedelta(milliseconds=1)
             end_timestamp = int(end_date.timestamp() * 1000)
-            print(f">>> Mode: Single Date Download ({args.date})")
+            logger.info(f">>> Mode: Single Date Download ({args.date})")
         except ValueError:
-            print("❌ Invalid date format. Use YYYY-MM-DD")
+            logger.error("❌ Invalid date format. Use YYYY-MM-DD")
             return
     else:
         # Default: Incremental Fetch
@@ -64,14 +85,14 @@ def fetch_and_store_daily_data():
             
             if last_time:
                 start_timestamp = int(last_time.timestamp() * 1000) + 1000
-                print(f">>> Mode: Incremental Fetch (from {last_time})")
+                logger.info(f">>> Mode: Incremental Fetch (from {last_time})")
             else:
                 yesterday = datetime.now() - timedelta(days=1)
                 start_timestamp = int(yesterday.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
-                print(f">>> Mode: Incremental Fetch (DB empty, from {yesterday})")
+                logger.info(f">>> Mode: Incremental Fetch (DB empty, from {yesterday})")
                 
         except Exception as e:
-            print(f"⚠️ Could not query max time: {e}")
+            logger.warning(f"⚠️ Could not query max time: {e}")
             yesterday = datetime.now() - timedelta(days=1)
             start_timestamp = int(yesterday.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
         
@@ -86,11 +107,11 @@ def fetch_and_store_daily_data():
             'http': PROXY_URL,
             'https': PROXY_URL
         }
-        print(f"🌐 Using Proxy: {PROXY_URL}")
+        logger.info(f"🌐 Using Proxy: {PROXY_URL}")
         
     exchange = ccxt.binance(exchange_config)
     
-    print(f">>> Fetching range: {datetime.fromtimestamp(start_timestamp/1000)} to {datetime.fromtimestamp(end_timestamp/1000)}")
+    logger.info(f">>> Fetching range: {datetime.fromtimestamp(start_timestamp/1000)} to {datetime.fromtimestamp(end_timestamp/1000)}")
 
     # 4. Loop Fetch (Pagination)
     limit = 1000
@@ -118,21 +139,21 @@ def fetch_and_store_daily_data():
             
             # Progress
             if len(all_ohlcv) % 50000 == 0:
-                print(f"    Fetched {len(all_ohlcv)} records...")
+                logger.info(f"    Fetched {len(all_ohlcv)} records...")
             
             # If the last fetched candle is already beyond or at end_timestamp, stop
             if ohlcv[-1][0] >= end_timestamp:
                 break
 
         except Exception as e:
-            print(f"❌ Error fetching data: {e}")
+            logger.error(f"❌ Error fetching data: {e}")
             break
 
     if not all_ohlcv:
-        print(">>> No data found for this range.")
+        logger.info(">>> No data found for this range.")
         return
 
-    print(f">>> Fetched {len(all_ohlcv)} records. Processing...")
+    logger.info(f">>> Fetched {len(all_ohlcv)} records. Processing...")
 
     # 5. Process & Insert
     columns = ['timestamp', 'open', 'high', 'low', 'close', 'volume']
@@ -157,9 +178,9 @@ def fetch_and_store_daily_data():
     # 6. Insert
     try:
         client.insert_df(f'{DB_NAME}.{TABLE_NAME}', df_final)
-        print(f"✅ Successfully inserted {len(df_final)} records.")
+        logger.info(f"✅ Successfully inserted {len(df_final)} records.")
     except Exception as e:
-        print(f"❌ Insert Failed: {e}")
+        logger.error(f"❌ Insert Failed: {e}")
 
 if __name__ == "__main__":
     fetch_and_store_daily_data()
