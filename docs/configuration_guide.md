@@ -28,7 +28,13 @@
 
 ---
 
-## 3. 策略参数 (Strategy Parameters)
+## 3. 策略选择 (Strategy Selection)
+
+| 参数名 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `ACTIVE_STRATEGY` | `'TrendMeanReversion'` | **当前激活策略**<br>指定 `src/strategies/` 目录下要加载的策略类名称。<br>目前可用: `TrendMeanReversion` |
+
+## 4. 策略参数 (Strategy Parameters)
 
 核心策略：**顺势震荡回归 (Trend Mean Reversion)**
 

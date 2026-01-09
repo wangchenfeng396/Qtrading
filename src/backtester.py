@@ -2,7 +2,7 @@
 import pandas as pd
 from datetime import timedelta
 import config
-import strategy
+from strategy_factory import get_strategy
 
 class Trade:
     def __init__(self, entry_time, entry_price, sl_price, size, sl_pct, side='LONG'):
@@ -37,6 +37,9 @@ class Backtester:
         self.equity_curve = []
         self.trades = []
         self.current_trade = None
+        
+        # Load Strategy
+        self.strategy = get_strategy(config.ACTIVE_STRATEGY)
         
         # Daily Constraints State
         self.current_date = None
@@ -127,7 +130,7 @@ class Backtester:
         # For < 100k bars it's acceptable.
         
         # Pre-calculate indicators first (safe)
-        self.df = strategy.calculate_indicators(self.df)
+        self.df = self.strategy.calculate_indicators(self.df)
         self.df.dropna(inplace=True)
         
         prev_row = None
@@ -206,7 +209,7 @@ class Backtester:
             # Only if no open trade and not stopped for day
             if not self.current_trade and not self.stop_trading_today and self.daily_trades_count < config.MAX_TRADES_PER_DAY:
                 
-                signal = strategy.check_signal(row, prev_row)
+                signal = self.strategy.check_signal(row, prev_row)
                 entry_price = row['close']
                 
                 if signal == 'LONG':

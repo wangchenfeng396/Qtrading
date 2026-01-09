@@ -11,15 +11,16 @@ import requests
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import config
-import strategy
+from strategy_factory import get_strategy
 from database import db_live
 
 # --- Logging Setup ---
-# ... (logging setup remains)
+# ...
 
 class LiveBot:
     def __init__(self):
         self.db = db_live # Default to live DB
+        self.strategy = get_strategy(config.ACTIVE_STRATEGY)
         
         # 1. Exchange Configuration
         self.api_ready = False
@@ -166,50 +167,8 @@ class LiveBot:
         if df_1h.empty or df_15m.empty or df_5m.empty:
             return None
 
-        # Calculate Indicators
-        df_1h['ema50'] = strategy.calculate_ema(df_1h['close'], config.TREND_EMA_PERIOD)
-        df_15m['ema20'] = strategy.calculate_ema(df_15m['close'], 20)
-        df_5m['ema20'] = strategy.calculate_ema(df_5m['close'], 20)
-        
-        current_close = df_5m.iloc[-1]['close']
-        
-        # RSI & ATR & BB
-        df_5m['rsi'] = strategy.calculate_rsi(df_5m['close'], period=config.RSI_PERIOD)
-        df_5m['atr'] = strategy.calculate_atr(df_5m, period=config.ATR_PERIOD)
-        df_5m['bb_upper'], df_5m['bb_lower'] = strategy.calculate_bollinger_bands(
-            df_5m['close'], period=config.BB_PERIOD, std_dev=config.BB_STD
-        )
-        
-        current_rsi = df_5m.iloc[-1]['rsi']
-        current_atr = df_5m.iloc[-1]['atr']
-        current_low = df_5m.iloc[-1]['low']
-        current_high = df_5m.iloc[-1]['high']
-        bb_lower = df_5m.iloc[-1]['bb_lower']
-        bb_upper = df_5m.iloc[-1]['bb_upper']
-        current_open = df_5m.iloc[-1]['open']
-
-        # Logic
-        trend_up = df_1h.iloc[-2]['close'] > df_1h.iloc[-2]['ema50']
-        trend_down = df_1h.iloc[-2]['close'] < df_1h.iloc[-2]['ema50']
-        
-        setup_long = (current_rsi < config.RSI_OVERSOLD) and \
-                     (current_low <= bb_lower) and \
-                     (current_close > current_open)
-                     
-        setup_short = (current_rsi > config.RSI_OVERBOUGHT) and \
-                      (current_high >= bb_upper) and \
-                      (current_close < current_open)
-
-        return {
-            'price': current_close,
-            'trend_up': trend_up,
-            'trend_down': trend_down,
-            'setup_long': setup_long,
-            'setup_short': setup_short,
-            'rsi': current_rsi,
-            'atr': current_atr,
-            'ema_1h': df_1h.iloc[-2]['ema50']
-        }
+        # Delegate analysis to the active strategy
+        return self.strategy.analyze_live(df_1h, df_15m, df_5m)
 
     def calculate_trade_params(self, entry_price, side='LONG', atr=None):
         if config.USE_ATR_FOR_SL and atr:
@@ -262,6 +221,13 @@ class LiveBot:
                 })
                 logger.info(f"✅ [Testnet] 开仓成功: {entry_order['orderId']}")
                 
+                # Calculate Average Price
+                avg_price = float(entry_order.get('avgPrice', 0.0))
+                if avg_price == 0 and float(entry_order.get('executedQty', 0)) > 0:
+                    avg_price = float(entry_order['cumQuote']) / float(entry_order['executedQty'])
+                if avg_price == 0:
+                    avg_price = price # Fallback to signal price
+                
                 # 2. SL (Stop Market)
                 self.exchange.fapiPrivatePostOrder({
                     'symbol': market_id,
@@ -301,7 +267,7 @@ class LiveBot:
                 logger.info(f"💰 [Testnet] TP2 已挂单: ${tp2_price:.2f}")
                 
                 # Log to DB
-                self.db.log_operation(self.symbol, side, 'ENTRY', price, quantity, 'FILLED')
+                self.db.log_operation(self.symbol, side, 'ENTRY', avg_price, quantity, 'FILLED')
                 return True
 
             # --- Mainnet Logic (Standard CCXT) ---
@@ -350,38 +316,44 @@ class LiveBot:
             return False
 
     def run(self):
-        print(f"🚀 Qtrading 实盘机器人已启动 | 交易对: {self.symbol}")
-        print(f"风险: {self.risk_pct*100}% | 资金: ${self.capital:.2f} | 策略: 顺势震荡回归 (v2.1)")
-        print("等待下一个 5分钟K线 收盘...\n")
+        logger.info(f"🚀 Qtrading 实盘机器人已启动 | 交易对: {self.symbol}")
+        logger.info(f"风险设置: {self.risk_pct*100}% 资金/笔 (当前本金 ${self.capital:.2f})")
+        logger.info(f"当前策略: {config.ACTIVE_STRATEGY}")
+        logger.info("等待下一个 5分钟K线 收盘...")
 
         while True:
+            # Log Equity Snapshot
+            self.db.log_equity(self.capital)
+
+            # 1. Sync with time
             now = datetime.now()
             next_run = now - timedelta(minutes=now.minute % 5, seconds=now.second, microseconds=now.microsecond) + timedelta(minutes=5)
             seconds_to_wait = (next_run - now).total_seconds()
             sleep_time = seconds_to_wait + 3
             
-            print(f"💤 休眠 {int(sleep_time)}秒 直到 {next_run.strftime('%H:%M:%S')}...")
+            logger.info(f"💤 休眠 {int(sleep_time)}秒 直到 {next_run.strftime('%H:%M:%S')}...")
             time.sleep(sleep_time)
             
-            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 正在检查市场...")
+            logger.info("正在检查市场...")
             
             data = self.get_latest_indicators()
             if not data:
-                print("⚠️ 数据获取失败，重试中...")
+                logger.warning("⚠️ 数据获取失败，将在下一个周期重试。")
                 continue
                 
+            # 3. Print Status
             price = data['price']
-            trend = "多头" if data['trend_up'] else ("空头" if data['trend_down'] else "震荡")
+            indicators = data['indicators']
+            signal = data['signal']
             
-            print(f"  价格: ${price:.2f} | RSI: {data['rsi']:.1f} | ATR: {data['atr']:.2f}")
-            print(f"  趋势 (1H): {trend} (EMA: {data['ema_1h']:.2f})")
+            logger.info(f"  价格: ${price:.2f} | RSI: {indicators['rsi']:.1f} | ATR: {data['atr']:.2f}")
+            logger.info(f"  趋势: {indicators['trend']} (EMA: {indicators['trend_ema']:.2f})")
             
-            if data['trend_up'] and data['setup_long']:
-                self.execute_signal(price, 'LONG', data['atr'])
-            elif data['trend_down'] and data['setup_short']:
-                self.execute_signal(price, 'SHORT', data['atr'])
+            # Check Signal
+            if signal:
+                self.execute_signal(price, signal, data['atr'])
             else:
-                print("  >> 暂无信号。")
+                logger.info("  >> 暂无信号。")
 
     def execute_signal(self, price, side, atr):
         side_cn = "做多" if side == 'LONG' else "做空"

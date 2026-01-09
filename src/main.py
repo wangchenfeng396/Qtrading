@@ -19,6 +19,7 @@ def main():
     end_date = args.end
     
     print(f"--- Qtrading Backtest System ---")
+    print(f"Strategy: {config.ACTIVE_STRATEGY}")
     print(f"Period: {start_date} to {end_date}")
     
     # 2. Data Preparation

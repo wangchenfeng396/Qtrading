@@ -14,6 +14,9 @@ MAX_TRADES_PER_DAY = 5       # 每天最多交易次数
 MAX_DAILY_LOSS = -2.00       # 单日最大亏损 (4笔满额止损)
 MAX_CONSECUTIVE_LOSS = 4     # 最大连亏次数
 
+# --- 策略选择 ---
+ACTIVE_STRATEGY = 'TrendMeanReversion'
+
 # --- 策略参数 (优化版: 趋势+震荡回归) ---
 USE_ATR_FOR_SL = True        # 使用 ATR 动态止损
 ATR_PERIOD = 14
