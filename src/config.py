@@ -56,7 +56,7 @@ load_dotenv()
 
 NOTIFICATION_ENABLED = True
 NOTIFICATION_CHANNELS = ['bk']  # 可选: 'telegram', 'bk'
-BARK_URL = os.getenv("BARK_URL", "https://api.day.app/YOUR_KEY/")
+BARK_URL = os.getenv("BARK_URL", "http://192.168.66.10:10009/myhFXFuNtus7kJHQsBWdzi/")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 

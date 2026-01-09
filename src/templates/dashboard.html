@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>Qtrading 实盘监控</title>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+    <style>
+        body { font-family: -apple-system, sans-serif; margin: 0; padding: 20px; background: #f0f2f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h2 { margin-top: 0; color: #333; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        select { padding: 8px 12px; font-size: 16px; border-radius: 4px; border: 1px solid #ddd; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f8f9fa; color: #666; }
+        .status-FILLED { color: green; font-weight: bold; }
+        .side-LONG { color: blue; }
+        .side-SHORT { color: red; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Qtrading 实盘监控</h1>
+            <select id="env-select" onchange="fetchData()">
+                <option value="live">🔴 实盘 (Live)</option>
+                <option value="testnet">🟢 模拟盘 (Testnet)</option>
+            </select>
+        </div>
+
+        <div class="card">
+            <h2>账户权益曲线 (Equity Curve)</h2>
+            <div id="equity-chart" style="height: 400px;"></div>
+        </div>
+
+        <div class="card">
+            <h2>最近操作 (Recent Operations)</h2>
+            <table id="ops-table">
+                <thead>
+                    <tr>
+                        <th>时间</th>
+                        <th>交易对</th>
+                        <th>方向</th>
+                        <th>动作</th>
+                        <th>价格</th>
+                        <th>数量</th>
+                        <th>状态</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <!-- Data will be inserted here -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        // 1. 初始化图表
+        Plotly.newPlot('equity-chart', [{x: [], y: [], type: 'scatter', line: {color: '#2980b9'}}], {
+            margin: {t: 20, r: 20, l: 50, b: 40},
+            autosize: true
+        });
+
+        async function fetchData() {
+            const env = document.getElementById('env-select').value;
+            
+            // 获取权益数据
+            try {
+                const eqRes = await fetch(`/api/equity?env=${env}`);
+                const eqData = await eqRes.json();
+                Plotly.update('equity-chart', {x: [eqData.x], y: [eqData.y]});
+            } catch (e) {
+                console.error(e);
+            }
+
+            // 获取操作记录
+            try {
+                const opRes = await fetch(`/api/operations?env=${env}`);
+                const opData = await opRes.json();
+                const tbody = document.querySelector('#ops-table tbody');
+                tbody.innerHTML = opData.map(op => `
+                    <tr>
+                        <td>${op.timestamp.replace('T', ' ').split('.')[0]}</td>
+                        <td>${op.symbol}</td>
+                        <td class="side-${op.side}">${op.side}</td>
+                        <td>${op.action}</td>
+                        <td>$${op.price.toFixed(2)}</td>
+                        <td>${op.quantity}</td>
+                        <td class="status-${op.status}">${op.status}</td>
+                    </tr>
+                `).join('');
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        // 每 5 秒刷新一次
+        fetchData();
+        setInterval(fetchData, 5000);
+    </script>
+</body>
+</html>

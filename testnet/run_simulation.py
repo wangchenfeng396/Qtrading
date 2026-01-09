@@ -15,28 +15,44 @@ import config as testnet_config
 sys.modules['config'] = testnet_config
 sys.modules['src.config'] = testnet_config
 
-print(f"✅ 已加载测试网配置: {testnet_config.__file__}")
+print(f"✅ 已加载测试网配置: {testnet_config.__file__}", flush=True)
 
 # 3. 导入核心逻辑
 from live_bot import LiveBot
+from database import db_testnet # Import testnet DB
 
 class SimulationBot(LiveBot):
     def __init__(self):
+        # 1. 注入实盘开启开关，确保 LiveBot 尝试下单
+        testnet_config.REAL_TRADING_ENABLED = True
+        
         super().__init__()
         
-        # 4. 强制开启测试网模式
-        self.exchange.set_sandbox_mode(True)
-        print("⚠️  已切换至 BINANCE FUTURES TESTNET (模拟盘)")
+        # 覆盖数据库为测试网库
+        self.db = db_testnet
         
-        # 5. 配置 API Key (下单必需)
-        # 如果 config 中没有填，这行可能会报错，提醒用户填写
-        if hasattr(testnet_config, 'BINANCE_API_KEY') and testnet_config.BINANCE_API_KEY != "YOUR_TESTNET_API_KEY":
+        print("⚠️  正在切换至 BINANCE FUTURES TESTNET (手动配置)")
+        
+        # 2. 手动覆盖 URL 以连接测试网 (绕过 CCXT 的 sandbox 检查)
+        self.exchange.urls['api'] = {
+            'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
+            'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1',
+        }
+        
+        # 3. 强制加载测试网 Key
+        if hasattr(testnet_config, 'BINANCE_API_KEY'):
             self.exchange.apiKey = testnet_config.BINANCE_API_KEY
             self.exchange.secret = testnet_config.BINANCE_SECRET
-            print("🔑 API Key 已配置")
-        else:
-            print("⚠️  未配置 API Key，只能获取行情，无法下单。")
-            print("   请修改 testnet/config.py 中的 BINANCE_API_KEY")
+            self.api_ready = True
+            print("🔑 测试网 API Key 已配置")
+        
+        # 重新获取余额以验证连接
+        try:
+            balance = self.exchange.fetch_balance()
+            self.capital = float(balance['USDT']['free'])
+            print(f"💰 测试网余额: ${self.capital:.2f}")
+        except Exception as e:
+            print(f"❌ 测试网连接失败: {e}")
 
 if __name__ == "__main__":
     bot = SimulationBot()

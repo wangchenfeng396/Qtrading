@@ -8,6 +8,10 @@ import os
 import argparse
 import logging
 from logging.handlers import TimedRotatingFileHandler
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # --- Configuration ---
 SYMBOL_BINANCE = 'BTC/USDT'
@@ -21,7 +25,7 @@ CLICKHOUSE_USER = 'default'
 CLICKHOUSE_PASSWORD = 'uming'
 
 # Proxy Configuration (Optional)
-PROXY_URL = "" 
+PROXY_URL = os.getenv("PROXY_URL", "") 
 
 # --- Logging Setup ---
 log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')

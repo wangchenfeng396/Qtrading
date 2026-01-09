@@ -12,10 +12,16 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import config
 import strategy
+from database import db_live
+
+# --- Logging Setup ---
+# ... (logging setup remains)
 
 class LiveBot:
     def __init__(self):
-        # 1. 检查 API 配置
+        self.db = db_live # Default to live DB
+        
+        # 1. Exchange Configuration
         self.api_ready = False
         if config.BINANCE_API_KEY and "YOUR_" not in config.BINANCE_API_KEY:
             self.api_ready = True
@@ -23,8 +29,8 @@ class LiveBot:
         exchange_config = {
             'enableRateLimit': True,
             'options': {'defaultType': 'future'},
-            # 忽略 SSL 证书验证 (解决某些网络环境下的连接问题)
-            'verify': False, 
+            # 忽略 SSL 证书验证 (解决某些网络环境下的连接问题) 将True改成False
+            'verify': True, 
             'timeout': 30000,
         }
         
@@ -48,12 +54,29 @@ class LiveBot:
         # 禁止 CCXT 内部的证书验证 (双重保险)
         self.exchange.verify = False
         
-        # 3. 运行模式设置
+        # 2. Testnet / Mainnet Mode
         if config.IS_TESTNET:
             self.exchange.set_sandbox_mode(True)
-            mode_str = "测试网 (Testnet)"
+            print("⚠️  运行模式: 测试网 (Testnet)")
+            
+            # 强制覆盖测试网 URL (解决 CCXT 兼容性问题)
+            testnet_fapi = 'https://testnet.binancefuture.com/fapi/v1'
+            testnet_spot = 'https://testnet.binance.vision/api'
+            self.exchange.urls['api'] = {
+                'fapiPublic': testnet_fapi,
+                'fapiPrivate': testnet_fapi,
+                'fapiPrivateV2': 'https://testnet.binancefuture.com/fapi/v2',
+                'fapiPublicV2': 'https://testnet.binancefuture.com/fapi/v2',
+                'public': testnet_spot,
+                'private': testnet_spot,
+                'v3': testnet_spot + '/v3',
+                'sapi': testnet_spot + '/v3',
+                'eapi': testnet_spot + '/v3',
+                'dapiPublic': 'https://testnet.binancefuture.com/dapi/v1',
+                'dapiPrivate': 'https://testnet.binancefuture.com/dapi/v1',
+            }
         else:
-            mode_str = "实盘 (Mainnet)"
+            print("🚨 运行模式: 实盘 (Mainnet)")
             
         self.symbol = 'BTC/USDT'
         self.risk_pct = config.RISK_PER_TRADE_PCT
@@ -218,16 +241,77 @@ class LiveBot:
     def place_orders(self, side, quantity, price, sl_price, tp1_price, tp2_price):
         """Execute Real Orders on Binance"""
         try:
-            print(f"⚡️ 正在下单: {side} {quantity:.5f} BTC @ 市价")
-            order_side = 'buy' if side == 'LONG' else 'sell'
+            logger.info(f"⚡️ 正在下单: {side} {quantity:.5f} BTC @ 市价")
             
             if not self.api_ready:
-                print("❌ 未配置 API Key，无法下单。 সন")
+                logger.error("❌ 未配置 API Key，无法下单。")
                 return False
 
+            # --- Testnet Specific Logic (Raw Calls for Stability) ---
+            if config.IS_TESTNET:
+                market_id = self.symbol.replace('/', '')
+                side_str = 'BUY' if side == 'LONG' else 'SELL'
+                sl_side_str = 'SELL' if side == 'LONG' else 'BUY'
+                
+                # 1. Entry (Market)
+                entry_order = self.exchange.fapiPrivatePostOrder({
+                    'symbol': market_id,
+                    'side': side_str,
+                    'type': 'MARKET',
+                    'quantity': quantity
+                })
+                logger.info(f"✅ [Testnet] 开仓成功: {entry_order['orderId']}")
+                
+                # 2. SL (Stop Market)
+                self.exchange.fapiPrivatePostOrder({
+                    'symbol': market_id,
+                    'side': sl_side_str,
+                    'type': 'STOP_MARKET',
+                    'stopPrice': sl_price,
+                    'closePosition': 'true' # ReduceOnly equivalent for Stop Market often needs closePosition or reduceOnly
+                })
+                logger.info(f"🛡 [Testnet] 止损已挂单: ${sl_price:.2f}")
+                
+                # 3. TP (Limit)
+                qty_tp1 = quantity * config.TP1_CLOSE_PCT
+                qty_tp2 = quantity - qty_tp1
+                
+                # TP1
+                self.exchange.fapiPrivatePostOrder({
+                    'symbol': market_id,
+                    'side': sl_side_str,
+                    'type': 'LIMIT',
+                    'timeInForce': 'GTC',
+                    'quantity': qty_tp1,
+                    'price': tp1_price,
+                    'reduceOnly': 'true'
+                })
+                logger.info(f"💰 [Testnet] TP1 已挂单: ${tp1_price:.2f}")
+                
+                # TP2
+                self.exchange.fapiPrivatePostOrder({
+                    'symbol': market_id,
+                    'side': sl_side_str,
+                    'type': 'LIMIT',
+                    'timeInForce': 'GTC',
+                    'quantity': qty_tp2,
+                    'price': tp2_price,
+                    'reduceOnly': 'true'
+                })
+                logger.info(f"💰 [Testnet] TP2 已挂单: ${tp2_price:.2f}")
+                
+                # Log to DB
+                self.db.log_operation(self.symbol, side, 'ENTRY', price, quantity, 'FILLED')
+                return True
+
+            # --- Mainnet Logic (Standard CCXT) ---
+            order_side = 'buy' if side == 'LONG' else 'sell'
+            
             # Entry
             entry_order = self.exchange.create_order(self.symbol, 'market', order_side, quantity)
-            print(f"✅ 开仓成功: {entry_order['id']}")
+            avg_price = entry_order.get('average', price) 
+            logger.info(f"✅ 开仓成功: {entry_order['id']}")
+            self.db.log_operation(self.symbol, side, 'ENTRY', avg_price, quantity, 'FILLED')
             
             # SL
             sl_side = 'sell' if side == 'LONG' else 'buy'
@@ -235,7 +319,8 @@ class LiveBot:
                 self.symbol, 'STOP_MARKET', sl_side, quantity, 
                 params={'stopPrice': sl_price, 'reduceOnly': True}
             )
-            print(f"🛡 止损已挂单: ${sl_price:.2f}")
+            logger.info(f"🛡 止损已挂单: ${sl_price:.2f}")
+            self.db.log_operation(self.symbol, side, 'STOP_LOSS_ORDER', sl_price, quantity, 'NEW')
 
             # TP
             tp_side = 'sell' if side == 'LONG' else 'buy'
@@ -247,16 +332,21 @@ class LiveBot:
                     self.symbol, 'LIMIT', tp_side, qty_tp1, tp1_price,
                     params={'reduceOnly': True}
                 )
+                logger.info(f"💰 TP1 已挂单: ${tp1_price:.2f}")
+                self.db.log_operation(self.symbol, side, 'TP1_ORDER', tp1_price, qty_tp1, 'NEW')
             
             if qty_tp2 > 0:
                 self.exchange.create_order(
                     self.symbol, 'LIMIT', tp_side, qty_tp2, tp2_price,
                     params={'reduceOnly': True}
                 )
+                logger.info(f"💰 TP2 已挂单: ${tp2_price:.2f}")
+                self.db.log_operation(self.symbol, side, 'TP2_ORDER', tp2_price, qty_tp2, 'NEW')
             
             return True
         except Exception as e:
-            print(f"❌ 下单失败: {e}")
+            logger.error(f"❌ 下单失败: {e}")
+            self.db.log_operation(self.symbol, side, 'ERROR', price, quantity, 'FAILED', str(e))
             return False
 
     def run(self):

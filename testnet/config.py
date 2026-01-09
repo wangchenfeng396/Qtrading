@@ -7,6 +7,8 @@ load_dotenv()
 
 # --- 模拟盘/测试网 专用设置 ---
 IS_TESTNET = True           # 标记为测试网环境
+REAL_TRADING_ENABLED = True # 模拟盘默认开启交易逻辑
+
 # 从环境变量加载测试网密钥
 BINANCE_API_KEY = os.getenv("TESTNET_API_KEY", "YOUR_TESTNET_API_KEY")
 BINANCE_SECRET = os.getenv("TESTNET_SECRET", "YOUR_TESTNET_SECRET")

@@ -115,6 +115,12 @@ ps -ef | grep live_bot
 kill <PID>
 ```
 
+### 7. 启动 Web 监控
+```bash
+python src/web_server.py
+```
+访问 http://localhost:5001 查看实时资金曲线。
+
 ## 📊 策略简介
 采用 **顺势震荡回归 (Trend Mean Reversion)** 逻辑：
 *   **趋势**: 1H EMA 100 过滤大势。
@@ -122,3 +128,5 @@ kill <PID>
 *   **风控**: 2% 复利仓位 + ATR 动态止损。
 
 详细说明请参阅 [docs/trading_strategy.md](docs/trading_strategy.md)。
+Web 监控说明请参阅 [docs/web_dashboard.md](docs/web_dashboard.md)。
+数据库设计请参阅 [docs/database_schema.md](docs/database_schema.md)。

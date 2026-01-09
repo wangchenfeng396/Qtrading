@@ -3,3 +3,4 @@ pandas
 clickhouse-connect
 plotly
 python-dotenv
+flask
