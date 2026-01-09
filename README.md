@@ -36,7 +36,11 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. 数据准备
+### 2. 安全配置 (API Key)
+本项目使用 `.env` 文件管理敏感信息。
+请参考 [docs/security_setup.md](docs/security_setup.md) 设置您的 API Key 和代理。
+
+### 3. 数据准备
 确保本地安装并运行 ClickHouse (默认端口 8123)。
 
 ```bash

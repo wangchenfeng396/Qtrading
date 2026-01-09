@@ -47,25 +47,30 @@ CLICKHOUSE_PASSWORD = 'uming'
 DB_NAME = 'crypto_data'
 SOURCE_TABLE = 'btc_usdt_1s'
 
+# --- 消息推送设置 ---
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
+
+NOTIFICATION_ENABLED = True
+NOTIFICATION_CHANNELS = ['bk']  # 可选: 'telegram', 'bk'
+BARK_URL = os.getenv("BARK_URL", "https://api.day.app/YOUR_KEY/")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
+
 # --- 实盘交易设置 (危险操作) ---
 REAL_TRADING_ENABLED = False # 设为 True 才会真正下单
 IS_TESTNET = False           # 实盘请设为 False
 
-# 币安实盘 API (请通过环境变量或直接填写)
-import os
+# 币安实盘 API (从环境变量加载)
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "YOUR_REAL_API_KEY")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "YOUR_REAL_SECRET")
-
-# --- 消息推送设置 ---
-NOTIFICATION_ENABLED = True
-NOTIFICATION_CHANNELS = ['bk']  # 可选: 'telegram', 'bk'
-BARK_URL = "http://192.168.66.10:10009/myhFXFuNtus7kJHQsBWdzi/"
-TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
 
 # --- 网络设置 (代理) ---
 # 如果您在中国大陆或其他无法直接访问 Binance 的地区，请设置 HTTP 代理
 # 格式示例: "http://127.0.0.1:7890"
-PROXY_URL = ""  # 设置为空字符串 "" 则不使用代理
+PROXY_URL = os.getenv("PROXY_URL", "")  # 设置为空字符串 "" 则不使用代理
 #PROXY_URL = "http://192.168.66.6:19091"
 

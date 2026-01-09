@@ -37,3 +37,4 @@ coverage.xml
 .pyright
 backtest_report.html
 backtest_trades.csv
+.env

@@ -1,9 +1,15 @@
 # testnet/config.py (独立配置文件)
+from dotenv import load_dotenv
+import os
+
+# Load environment variables
+load_dotenv()
 
 # --- 模拟盘/测试网 专用设置 ---
 IS_TESTNET = True           # 标记为测试网环境
-BINANCE_API_KEY = "YOUR_TESTNET_API_KEY"
-BINANCE_SECRET = "YOUR_TESTNET_SECRET"
+# 从环境变量加载测试网密钥
+BINANCE_API_KEY = os.getenv("TESTNET_API_KEY", "YOUR_TESTNET_API_KEY")
+BINANCE_SECRET = os.getenv("TESTNET_SECRET", "YOUR_TESTNET_SECRET")
 
 # --- 账户设置 ---
 INITIAL_CAPITAL = 1000.0    # 模拟盘初始资金通常较多
@@ -54,9 +60,9 @@ SOURCE_TABLE = ''
 # --- 消息推送 ---
 NOTIFICATION_ENABLED = True
 NOTIFICATION_CHANNELS = ['bk'] 
-BARK_URL = "https://api.day.app/YOUR_KEY/"
-TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
+BARK_URL = os.getenv("BARK_URL", "https://api.day.app/YOUR_KEY/")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID")
 
 # --- 网络设置 (代理) ---
-PROXY_URL = "" # 如果需要，填入 "http://127.0.0.1:7890"
+PROXY_URL = os.getenv("PROXY_URL", "")

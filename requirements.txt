@@ -2,3 +2,4 @@ ccxt
 pandas
 clickhouse-connect
 plotly
+python-dotenv
