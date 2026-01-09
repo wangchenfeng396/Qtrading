@@ -28,31 +28,7 @@ class SimulationBot(LiveBot):
         
         super().__init__()
         
-        # 覆盖数据库为测试网库
-        self.db = db_testnet
-        
-        print("⚠️  正在切换至 BINANCE FUTURES TESTNET (手动配置)")
-        
-        # 2. 手动覆盖 URL 以连接测试网 (绕过 CCXT 的 sandbox 检查)
-        self.exchange.urls['api'] = {
-            'fapiPublic': 'https://testnet.binancefuture.com/fapi/v1',
-            'fapiPrivate': 'https://testnet.binancefuture.com/fapi/v1',
-        }
-        
-        # 3. 强制加载测试网 Key
-        if hasattr(testnet_config, 'BINANCE_API_KEY'):
-            self.exchange.apiKey = testnet_config.BINANCE_API_KEY
-            self.exchange.secret = testnet_config.BINANCE_SECRET
-            self.api_ready = True
-            print("🔑 测试网 API Key 已配置")
-        
-        # 重新获取余额以验证连接
-        try:
-            balance = self.exchange.fetch_balance()
-            self.capital = float(balance['USDT']['free'])
-            print(f"💰 测试网余额: ${self.capital:.2f}")
-        except Exception as e:
-            print(f"❌ 测试网连接失败: {e}")
+        print("🚀 [模拟盘] 机器人已就绪", flush=True)
 
 if __name__ == "__main__":
     bot = SimulationBot()

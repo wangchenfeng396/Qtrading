@@ -6,6 +6,8 @@ from datetime import datetime, timedelta
 import sys
 import os
 import requests
+import logging
+from logging.handlers import TimedRotatingFileHandler
 
 # Ensure we can import from src
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -15,7 +17,23 @@ from strategy_factory import get_strategy
 from database import db_live
 
 # --- Logging Setup ---
-# ...
+log_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'logs')
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+logger = logging.getLogger("Qtrading_Live")
+logger.setLevel(logging.INFO)
+
+file_handler = TimedRotatingFileHandler(
+    os.path.join(log_dir, 'live_bot.log'), when='midnight', interval=1, backupCount=30, encoding='utf-8'
+)
+file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
 
 class LiveBot:
     def __init__(self):
@@ -30,96 +48,101 @@ class LiveBot:
         exchange_config = {
             'enableRateLimit': True,
             'options': {'defaultType': 'future'},
-            # 忽略 SSL 证书验证 (解决某些网络环境下的连接问题) 将True改成False
-            'verify': True, 
+            'verify': False, 
             'timeout': 30000,
         }
         
-        # 如果有 API Key，加载它
         if self.api_ready:
             exchange_config['apiKey'] = config.BINANCE_API_KEY
             exchange_config['secret'] = config.BINANCE_SECRET
         
-        # 2. 代理设置 (仅当配置了非空字符串时才应用)
         if config.PROXY_URL and config.PROXY_URL.strip():
             exchange_config['proxies'] = {
                 'http': config.PROXY_URL,
                 'https': config.PROXY_URL
             }
-            print(f"🌐 使用代理: {config.PROXY_URL}")
+            logger.info(f"🌐 使用代理: {config.PROXY_URL}")
         else:
-            print("🌐 不使用代理 (直连模式)")
+            logger.info("🌐 不使用代理 (直连模式)")
 
         self.exchange = ccxt.binance(exchange_config)
-        
-        # 禁止 CCXT 内部的证书验证 (双重保险)
         self.exchange.verify = False
         
         # 2. Testnet / Mainnet Mode
         if config.IS_TESTNET:
-            self.exchange.set_sandbox_mode(True)
-            print("⚠️  运行模式: 测试网 (Testnet)")
+            # self.exchange.set_sandbox_mode(True) # 禁用此行，因为 CCXT 会由于过时而拦截请求
+            mode_str = "测试网 (Testnet)"
+            logger.warning(f"⚠️  运行模式: {mode_str}")
             
-            # 强制覆盖测试网 URL (解决 CCXT 兼容性问题)
+            # 强制覆盖测试网 URL (手动路由)
             testnet_fapi = 'https://testnet.binancefuture.com/fapi/v1'
-            testnet_spot = 'https://testnet.binance.vision/api'
             self.exchange.urls['api'] = {
                 'fapiPublic': testnet_fapi,
                 'fapiPrivate': testnet_fapi,
                 'fapiPrivateV2': 'https://testnet.binancefuture.com/fapi/v2',
                 'fapiPublicV2': 'https://testnet.binancefuture.com/fapi/v2',
-                'public': testnet_spot,
-                'private': testnet_spot,
-                'v3': testnet_spot + '/v3',
-                'sapi': testnet_spot + '/v3',
-                'eapi': testnet_spot + '/v3',
+                'fapiPrivateV3': 'https://testnet.binancefuture.com/fapi/v3',
+                'fapiPublicV3': 'https://testnet.binancefuture.com/fapi/v3',
+                'public': testnet_fapi,
+                'private': testnet_fapi,
+                'v3': testnet_fapi,
+                'sapi': testnet_fapi,
+                'eapi': testnet_fapi,
                 'dapiPublic': 'https://testnet.binancefuture.com/dapi/v1',
                 'dapiPrivate': 'https://testnet.binancefuture.com/dapi/v1',
             }
         else:
-            print("🚨 运行模式: 实盘 (Mainnet)")
+            mode_str = "实盘 (Mainnet)"
+            logger.warning(f"🚨 运行模式: {mode_str}")
             
         self.symbol = 'BTC/USDT'
         self.risk_pct = config.RISK_PER_TRADE_PCT
         self.sl_pct = config.SL_PCT
-        self.capital = config.INITIAL_CAPITAL
-
-        # 4. 连接检查与资金获取
+        
+        # 3. Initial Balance Check
         if self.check_connection():
-            print(f"✅ 交易所连接正常 | 模式: {mode_str}")
+            logger.info(f"✅ 交易所连接正常 | 模式: {mode_str}")
             
-            # 尝试获取余额 (仅当 API 配置且非仅行情模式时)
             if self.api_ready and config.REAL_TRADING_ENABLED:
                 try:
-                    balance = self.exchange.fetch_balance()
-                    self.capital = float(balance['USDT']['free'])
-                    print(f"💰 账户可用余额: ${self.capital:.2f}")
+                    if config.IS_TESTNET:
+                        # 测试网专用的获取余额方式 (绕过 ccxt.fetch_balance 的兼容性问题)
+                        account_info = self.exchange.fapiPrivateV2GetAccount()
+                        for asset in account_info['assets']:
+                            if asset['asset'] == 'USDT':
+                                self.capital = float(asset['availableBalance'])
+                                break
+                    else:
+                        # 实盘使用标准方式
+                        balance = self.exchange.fetch_balance()
+                        self.capital = float(balance['USDT']['free'])
+                    
+                    logger.info(f"💰 账户可用余额: ${self.capital:.2f}")
                 except Exception as e:
-                    print(f"⚠️ 无法获取余额 (可能权限不足或网络问题): {e}")
-                    print(f"   将在默认本金 ${self.capital} 上运行信号逻辑。 সন")
+                    logger.error(f"❌ 获取余额失败 (使用默认配置): {e}")
+                    self.capital = config.INITIAL_CAPITAL
             elif not self.api_ready:
-                print("👀 未配置 API Key，运行在 [行情观察模式]。")
+                logger.info("👀 未配置 API Key，运行在 [行情观察模式]。")
+                self.capital = config.INITIAL_CAPITAL
             else:
-                print(f"👀 实盘下单已关闭 (REAL_TRADING_ENABLED=False)，仅推送信号。 সন")
+                logger.info(f"👀 实盘下单已关闭 (REAL_TRADING_ENABLED=False)，仅推送信号。")
+                self.capital = config.INITIAL_CAPITAL
                 
-            # 推送启动消息
             self.send_notification("Qtrading 服务启动", f"环境: {mode_str}\n状态: 监控中\n余额: ${self.capital:.2f}")
         else:
-            print("❌ 无法连接到币安 API，请检查网络或代理设置。 সন")
-            # 即使连接失败也暂不退出，让循环重试
+            logger.error("❌ 无法连接到币安 API，请检查网络或代理设置。 সন")
             self.send_notification("Qtrading 启动失败", "无法连接交易所 API，正在重试...")
+            self.capital = config.INITIAL_CAPITAL
 
     def check_connection(self):
-        """简单的连通性测试"""
         try:
             self.exchange.fetch_time()
             return True
         except Exception as e:
-            print(f"Connection Error: {e}")
+            logger.error(f"Connection Error: {e}")
             return False
         
     def send_notification(self, title, message):
-        """Send notifications via configured channels (Bark, Telegram)"""
         if not config.NOTIFICATION_ENABLED:
             return
 
@@ -127,16 +150,14 @@ class LiveBot:
         if isinstance(channels, str):
             channels = [channels]
 
-        # 1. Bark Notification
         if 'bk' in channels and config.BARK_URL:
             try:
                 base_url = config.BARK_URL.rstrip('/')
                 url = f"{base_url}/{title}/{message}"
                 requests.get(url, timeout=5)
             except Exception as e:
-                print(f"❌ Bark 推送失败: {e}")
+                logger.error(f"❌ Bark 推送失败: {e}")
 
-        # 2. Telegram Notification
         if 'tg' in channels and config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
             try:
                 tg_url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -147,7 +168,7 @@ class LiveBot:
                 }
                 requests.post(tg_url, json=payload, timeout=5)
             except Exception as e:
-                print(f"❌ Telegram 推送失败: {e}")
+                logger.error(f"❌ Telegram 推送失败: {e}")
 
     def fetch_candles(self, timeframe, limit=100):
         try:
@@ -156,7 +177,7 @@ class LiveBot:
             df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
             return df
         except Exception as e:
-            print(f"❌ 获取 {timeframe} K线失败: {e}")
+            logger.error(f"❌ 获取 {timeframe} K线失败: {e}")
             return pd.DataFrame()
 
     def get_latest_indicators(self):
@@ -203,7 +224,7 @@ class LiveBot:
             logger.info(f"⚡️ 正在下单: {side} {quantity:.5f} BTC @ 市价")
             
             if not self.api_ready:
-                logger.error("❌ 未配置 API Key，无法下单。")
+                logger.error("❌ 未配置 API Key，无法下单。 সন")
                 return False
 
             # --- Testnet Specific Logic (Raw Calls for Stability) ---
@@ -234,7 +255,7 @@ class LiveBot:
                     'side': sl_side_str,
                     'type': 'STOP_MARKET',
                     'stopPrice': sl_price,
-                    'closePosition': 'true' # ReduceOnly equivalent for Stop Market often needs closePosition or reduceOnly
+                    'closePosition': 'true' # ReduceOnly equivalent
                 })
                 logger.info(f"🛡 [Testnet] 止损已挂单: ${sl_price:.2f}")
                 
@@ -338,7 +359,7 @@ class LiveBot:
             
             data = self.get_latest_indicators()
             if not data:
-                logger.warning("⚠️ 数据获取失败，将在下一个周期重试。")
+                logger.warning("⚠️ 数据获取失败，将在下一个周期重试。 সন")
                 continue
                 
             # 3. Print Status
@@ -353,43 +374,52 @@ class LiveBot:
             if signal:
                 self.execute_signal(price, signal, data['atr'])
             else:
-                logger.info("  >> 暂无信号。")
+                logger.info("  >> 暂无信号。 সন")
 
     def execute_signal(self, price, side, atr):
         side_cn = "做多" if side == 'LONG' else "做空"
-        print("\n" + "="*40)
-        print(f"🚀 {side_cn} 信号触发！")
-        print("="*40)
+        side_emoji = "🟢" if side == 'LONG' else "🔴"
+        
+        logger.info("="*40)
+        logger.info(f"🚀 {side_cn} 信号触发！")
+        logger.info("="*40)
         
         params = self.calculate_trade_params(price, side, atr)
         
-        print(f"🔵 开仓价:   ${price:.2f} (市价)")
-        print(f"🛑 止损价:   ${params['sl']:.2f}")
-        print(f"🎯 止盈一:   ${params['tp1']:.2f}")
-        print(f"🎯 止盈二:   ${params['tp2']:.2f}")
-        print(f"⚖️ 仓位量:   {params['qty']:.5f} BTC")
+        logger.info(f"🔵 开仓价:   ${price:,.2f} (市价)")
+        logger.info(f"🛑 止损价:   ${params['sl']:,.2f} (ATR动态)")
+        logger.info(f"🎯 止盈一:   ${params['tp1']:,.2f} ({config.TP1_RATIO}R)")
+        logger.info(f"🎯 止盈二:   ${params['tp2']:,.2f} ({config.TP2_RATIO}R)")
+        logger.info(f"⚖️ 仓位量:   {params['qty']:.5f} BTC")
+        logger.info(f"💵 总价值:   ${params['qty']*price:,.2f}")
         
-        executed = False
-        if config.REAL_TRADING_ENABLED and self.api_ready:
-            executed = self.place_orders(side, params['qty'], price, params['sl'], params['tp1'], params['tp2'])
-            status_msg = "已自动下单" if executed else "下单失败"
+        status_msg = "模拟信号"
+        mode_tag = "[模拟]"
+        
+        # Real Execution
+        if config.REAL_TRADING_ENABLED:
+            mode_tag = "[实盘]"
+            success = self.place_orders(
+                side, params['qty'], price, 
+                params['sl'], params['tp1'], params['tp2']
+            )
+            if success:
+                status_msg = "下单成功 ✅"
+            else:
+                status_msg = "下单失败 ❌"
         else:
-            status_msg = "模拟信号 (未下单)"
-            if not self.api_ready:
-                print("⚠️  提示: 未配置 API Key，无法下单。 সন")
-            elif not config.REAL_TRADING_ENABLED:
-                print("⚠️  提示: 实盘开关未开启 (REAL_TRADING_ENABLED=False)。 সন")
+            logger.info("👀 模拟模式 (未实际下单，请在 config.py 开启 REAL_TRADING_ENABLED")
 
-        print("="*40 + "\n")
+        logger.info("="*40)
         
-        msg_title = f"🚀 BTC/USDT {side_cn} {status_msg}"
+        # Enhanced Notification
+        msg_title = f"{side_emoji} {mode_tag} BTC {side_cn} {status_msg}"
         msg_body = (
-            f"价格: ${price:.2f}\n"
-            f"止损: ${params['sl']:.2f}\n"
-            f"TP1: ${params['tp1']:.2f}\n"
-            f"TP2: ${params['tp2']:.2f}\n"
-            f"仓位: {params['qty']:.5f} BTC\n"
-            f"操作: 请手动挂单或检查自动下单结果"
+            f"💰 价格: ${price:,.2f}\n"
+            f"🛡 止损: ${params['sl']:,.2f}\n"
+            f"🎯 止盈: ${params['tp1']:,.2f} / ${params['tp2']:,.2f}\n"
+            f"⚖️ 仓位: {params['qty']:.5f} BTC\n"
+            f"📊 因子: ATR={atr:.2f}"
         )
         self.send_notification(msg_title, msg_body)
 

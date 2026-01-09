@@ -52,14 +52,14 @@ python scripts/month_download_s_to_clickhouse.py --month 2024-01
 python scripts/day_download_s_to_clickhouse.py --date 2026-01-06
 ```
 
-### 3. 运行回测
+### 4. 运行回测
 ```bash
 # 运行指定时间段的回测
 python src/main.py --start 2024-01-01 --end 2024-01-07
 ```
 运行后会生成交互式报告 `backtest_report.html`。
 
-### 4. 实盘运行 (后台模式)
+### 5. 实盘运行 (后台模式)
 ```bash
 # 启动实盘机器人 (后台运行，日志记录到 logs/live_bot.log)
 ./start_live.sh
@@ -68,17 +68,50 @@ python src/main.py --start 2024-01-01 --end 2024-01-07
 tail -f logs/live_bot.log
 ```
 
-### 5. 模拟盘实操
+### 6. 模拟盘实操
 ```bash
 # 启动模拟盘 (后台运行)
 ./start_simulation.sh
 ```
 
-### 6. 自动数据补全
+### 7. 自动数据补全
 ```bash
 # 启动每日数据下载器 (后台运行)
 ./start_download.sh
 ```
+
+### 8. 启动 Web 监控
+```bash
+python src/web_server.py
+```
+访问 http://localhost:5001 查看实时资金曲线。
+
+## 📦 部署到服务器
+
+项目包含 `deploy.sh` 脚本，用于自动打包并忽略不必要的本地文件（如 `venv`, `.env`, `*.db`, 日志等）。
+
+### 1. 本地打包
+在开发环境执行：
+```bash
+./deploy.sh
+```
+执行后会生成 `Qtrading_deploy_时间戳.tar.gz`。
+
+### 2. 服务器部署步骤
+1.  **上传**: 将生成的压缩包上传至服务器。
+2.  **解压**: `tar -xzvf Qtrading_deploy_xxxx.tar.gz`
+3.  **环境初始化**:
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
+    ```
+4.  **配置密钥**:
+    ```bash
+    cp .env.example .env
+    vim .env  # 填入 API Key 和 代理信息
+    ```
+5.  **启动**: 使用下方的“后台脚本管理”命令启动机器人。
 
 ## 🛠 后台脚本管理
 
@@ -116,12 +149,6 @@ ps -ef | grep live_bot
 kill <PID>
 ```
 
-### 7. 启动 Web 监控
-```bash
-python src/web_server.py
-```
-访问 http://localhost:5001 查看实时资金曲线。
-
 ## 📊 策略简介
 采用 **顺势震荡回归 (Trend Mean Reversion)** 逻辑：
 *   **趋势**: 1H EMA 100 过滤大势。
@@ -131,3 +158,5 @@ python src/web_server.py
 详细说明请参阅 [docs/trading_strategy.md](docs/trading_strategy.md)。
 Web 监控说明请参阅 [docs/web_dashboard.md](docs/web_dashboard.md)。
 数据库设计请参阅 [docs/database_schema.md](docs/database_schema.md)。
+配置详解请参阅 [docs/configuration_guide.md](docs/configuration_guide.md)。
+安全配置指引请参阅 [docs/security_setup.md](docs/security_setup.md)。

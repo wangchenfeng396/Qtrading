@@ -25,6 +25,9 @@ MAX_TRADES_PER_DAY = 10     # 模拟盘可以放宽限制
 MAX_DAILY_LOSS = -100.0
 MAX_CONSECUTIVE_LOSS = 5
 
+# --- 策略选择 ---
+ACTIVE_STRATEGY = 'TrendMeanReversion'
+
 # --- 策略参数 (保持与实盘一致) ---
 USE_ATR_FOR_SL = True
 ATR_PERIOD = 14
