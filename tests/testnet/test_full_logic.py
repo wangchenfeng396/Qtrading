@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 # 加载配置
 load_dotenv()
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.append(os.path.join(os.path.dirname(__file__), '../../src'))
 
 # 模拟配置参数
 SYMBOL = 'BTC/USDT'

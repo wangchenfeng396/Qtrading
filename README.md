@@ -11,6 +11,9 @@
     *   `live_bot.py`: 实盘信号生成器 (Live)
     *   `data_loader.py`: 数据加载与聚合
     *   `config.py`: **系统主配置文件** (查看 [配置详解](docs/configuration_guide.md))
+*   `tests/`: 测试套件
+    *   `mainnet/`: 实盘验证脚本
+    *   `testnet/`: 模拟盘验证脚本
 *   `testnet/`: 模拟盘环境
     *   `config.py`: 模拟盘独立配置
     *   `run_simulation.py`: 模拟盘运行脚本

@@ -28,6 +28,6 @@
 
 ```bash
 # 执行全流程测试 (开仓 -> 止损 -> 止盈)
-python testnet/test_full_logic.py
+python tests/testnet/test_full_logic.py
 ```
 如果该脚本运行成功，说明您的网络、API Key 和账户状态均正常。

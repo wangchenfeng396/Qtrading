@@ -35,4 +35,8 @@ Qtrading/
 ## 🧪 模拟环境 (testnet/)
 
 *   **`run_simulation.py`**: 模拟盘启动器。它会注入 `testnet/config.py` 配置，并调用 `src` 中的核心逻辑，实现“代码零修改”的仿真运行。
-*   **`test_full_logic.py`**: 包含完整的下单流程验证脚本（开仓+止损+止盈），用于测试 API 连通性。
+
+## 🧪 测试套件 (tests/)
+
+*   **`mainnet/test_full_logic.py`**: 实盘环境验证脚本 (消耗真实资金)。
+*   **`testnet/test_full_logic.py`**: 模拟盘环境验证脚本。
