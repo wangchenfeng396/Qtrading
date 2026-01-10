@@ -20,6 +20,10 @@ COMMISSION_RATE = 0.0005    # 手续费
 
 # --- 风控设置 ---
 RISK_PER_TRADE_PCT = 0.02   # 2% 风险
+# 仓位管理
+MAX_OPEN_POSITIONS = 4      # 最大同时持仓
+POSITION_SIZE_PCT = 0.20    # 单笔最大投入 20%
+
 SL_PCT = 0.015
 MAX_TRADES_PER_DAY = 10     # 模拟盘可以放宽限制
 MAX_DAILY_LOSS = -100.0

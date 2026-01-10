@@ -435,6 +435,141 @@ class LiveBot:
         except Exception as e:
             logger.error(f"❌ 更新余额失败: {e}")
 
+    def get_position_data(self):
+        """Helper to get current position data safely for both Testnet and Mainnet"""
+        try:
+            if config.IS_TESTNET:
+                # Raw call for Testnet to avoid load_markets issues
+                market_id = self.symbol.replace('/', '')
+                positions = self.exchange.fapiPrivateV2GetPositionRisk({'symbol': market_id})
+                # Result is a list, usually one item for One-Way mode if symbol specified
+                if positions:
+                    p = positions[0]
+                    return {
+                        'symbol': self.symbol,
+                        'contracts': float(p['positionAmt']),
+                        'entryPrice': float(p['entryPrice']),
+                        'side': 'long' if float(p['positionAmt']) > 0 else 'short' # Check logic
+                    }
+                return None
+            else:
+                # Standard CCXT
+                positions = self.exchange.fetch_positions([self.symbol])
+                p = next((p for p in positions if p['symbol'] == self.symbol), None)
+                if p:
+                    return {
+                        'symbol': self.symbol,
+                        'contracts': float(p['contracts']),
+                        'entryPrice': float(p['entryPrice']),
+                        'side': p['side']
+                    }
+                return None
+        except Exception as e:
+            logger.error(f"获取持仓失败: {e}")
+            return None
+
+    def get_open_orders_data(self):
+        """Helper to get open orders safely"""
+        try:
+            if config.IS_TESTNET:
+                market_id = self.symbol.replace('/', '')
+                raw_orders = self.exchange.fapiPrivateGetOpenOrders({'symbol': market_id})
+                orders = []
+                for o in raw_orders:
+                    orders.append({
+                        'id': str(o['orderId']),
+                        'type': o['type'], # Raw: LIMIT, STOP_MARKET
+                        'stopPrice': float(o.get('stopPrice', 0))
+                    })
+                return orders
+            else:
+                # Standard CCXT
+                return self.exchange.fetch_open_orders(self.symbol)
+        except Exception as e:
+            logger.error(f"获取挂单失败: {e}")
+            return []
+
+    def monitor_positions(self):
+        """订单巡检：实现推保本逻辑 (Move SL to BE)"""
+        if not self.api_ready or not config.REAL_TRADING_ENABLED:
+            return
+
+        try:
+            # 1. 获取当前持仓
+            position = self.get_position_data()
+            
+            if not position or position['contracts'] == 0:
+                return # 无持仓
+
+            entry_price = position['entryPrice']
+            current_qty = abs(position['contracts'])
+            side = 'LONG' if position['contracts'] > 0 else 'SHORT' # positionAmt signed
+
+            # 2. 获取当前挂单
+            open_orders = self.get_open_orders_data()
+            
+            # 分类挂单 (统一转小写进行比较)
+            tp_orders = [o for o in open_orders if o['type'].lower() in ['limit', 'take_profit', 'take_profit_market']]
+            sl_orders = [o for o in open_orders if o['type'].lower() in ['stop', 'stop_market', 'stop_loss', 'stop_loss_market']]
+            
+            if len(tp_orders) == 1:
+                # 情况 A: 存在旧止损，且还没移动到保本位
+                if sl_orders:
+                    current_sl_order = sl_orders[0]
+                    current_sl_price = float(current_sl_order['stopPrice'])
+                    
+                    if abs(current_sl_price - entry_price) > (entry_price * 0.001):
+                        logger.info(f"🔍 巡检触发: TP1 已成交，正在移动止损至保本位...")
+                        self.cancel_and_place_be_sl(side, entry_price, current_qty, current_sl_order['id'])
+                
+                # 情况 B: 止损单丢失，但仍有持仓且 TP1 已过，补挂保本损
+                else:
+                    logger.warning(f"⚠️ 巡检警报: 持仓中且 TP1 已过，但未发现止损单！正在补挂保本损...")
+                    self.cancel_and_place_be_sl(side, entry_price, current_qty)
+
+        except Exception as e:
+            logger.error(f"❌ 订单巡检出错: {e}")
+
+    def cancel_and_place_be_sl(self, side, entry_price, qty, old_order_id=None):
+        """撤销旧止损并挂出保本损"""
+        try:
+            if old_order_id:
+                try:
+                    self.exchange.cancel_order(old_order_id, self.symbol)
+                    logger.info(f"🗑 已撤销旧止损单: {old_order_id}")
+                except Exception as e:
+                    logger.error(f"⚠️ 撤销旧止损失败 (可能已成交): {e}")
+
+            # 挂新 SL
+            sl_side = 'sell' if side == 'LONG' else 'buy'
+            be_price_str = self.exchange.price_to_precision(self.symbol, entry_price)
+            qty_str = self.exchange.amount_to_precision(self.symbol, qty)
+            
+            if config.IS_TESTNET:
+                market_id = self.symbol.replace('/', '')
+                self.exchange.fapiPrivatePostOrder({
+                    'symbol': market_id,
+                    'side': sl_side.upper(),
+                    'type': 'STOP_MARKET',
+                    'stopPrice': be_price_str,
+                    'closePosition': 'true'
+                })
+            else:
+                self.exchange.create_order(
+                    self.symbol, 'STOP_MARKET', sl_side, float(qty_str), None,
+                    params={'stopPrice': float(be_price_str), 'reduceOnly': True}
+                )
+            
+            logger.info(f"✅ 保本损挂单成功: ${be_price_str}")
+            self.send_notification("🛡 策略更新", f"止损已同步至保本位: ${be_price_str}")
+            self.db.log_operation(self.symbol, side, 'MOVE_TO_BE', float(be_price_str), float(qty_str), 'NEW')
+            
+        except Exception as e:
+            logger.error(f"❌ 执行保本损操作失败: {e}")
+
+        except Exception as e:
+            logger.error(f"❌ 订单巡检出错: {e}")
+
     def run(self):
         mode_label = "[模拟盘]" if config.IS_TESTNET else "[实盘]"
         logger.info(f"🚀 {mode_label} Qtrading 机器人已就绪 | 交易对: {self.symbol}")
@@ -446,8 +581,11 @@ class LiveBot:
             # 1. Update Balance & Log Equity
             self.update_balance()
             self.db.log_equity(self.capital)
+            
+            # 2. Monitor Positions (推保本)
+            self.monitor_positions()
 
-            # 2. Sync with time
+            # 3. Sync with time
             now = datetime.now()
             next_run = now - timedelta(minutes=now.minute % 5, seconds=now.second, microseconds=now.microsecond) + timedelta(minutes=5)
             seconds_to_wait = (next_run - now).total_seconds()

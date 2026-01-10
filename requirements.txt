@@ -4,3 +4,4 @@ clickhouse-connect
 plotly
 python-dotenv
 flask
+urllib3==1.26.6
