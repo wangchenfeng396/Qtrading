@@ -7,7 +7,12 @@ COMMISSION_RATE = 0.0005    # 手续费 (万5, 币安标准)
 
 # --- 风控设置 (严格) ---
 # RISK_PER_TRADE_AMOUNT = 0.50 # 固定金额模式 (已弃用)
-RISK_PER_TRADE_PCT = 0.02    # 资金百分比模式 (2% 本金/笔)
+RISK_PER_TRADE_PCT = 0.02    # 单笔风险: 亏损额不超过本金的 2%
+
+# --- 仓位管理 (资金分配) ---
+MAX_OPEN_POSITIONS = 4       # 最大同时持仓数量 (4单)
+POSITION_SIZE_PCT = 0.20     # 单笔最大投入资金比例 (20%)
+# 逻辑: 每次开仓取 min(风险计算出的仓位, 本金*20%对应的仓位)
 
 SL_PCT = 0.015               # 默认止损幅度 (1.5%) - 如果 ATR 无效
 MAX_TRADES_PER_DAY = 5       # 每天最多交易次数

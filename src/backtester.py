@@ -36,7 +36,7 @@ class Backtester:
         self.capital = config.INITIAL_CAPITAL
         self.equity_curve = []
         self.trades = []
-        self.current_trade = None
+        self.open_trades = [] # 支持多单
         
         # Load Strategy
         self.strategy = get_strategy(config.ACTIVE_STRATEGY)
@@ -60,27 +60,28 @@ class Backtester:
             self.stop_trading_today = False
 
     def calculate_position_size(self, entry_price, sl_price):
-        # Risk per trade = 2% of current capital
-        risk_amount = self.capital * config.RISK_PER_TRADE_PCT
+        # 1. 基于风险计算 (Risk Based - USDT)
+        # 允许亏损的 USDT 金额
+        risk_amount_usdt = self.capital * config.RISK_PER_TRADE_PCT
         
-        # Risk per unit = abs(Entry - SL)
-        risk_per_unit = abs(entry_price - sl_price)
-        if risk_per_unit <= 0: return 0
+        # 每 1 BTC 的亏损 USDT (Diff)
+        risk_per_btc_usdt = abs(entry_price - sl_price)
         
-        # Quantity = Total Risk Allowed / Risk Per Unit
-        qty = risk_amount / risk_per_unit
+        if risk_per_btc_usdt <= 0: return 0
         
-        # Check Leverage Constraint (Margin Requirement)
-        # Position Value = Qty * Entry
-        # Margin Needed = Pos Value / Leverage
-        position_value = qty * entry_price
-        margin_needed = position_value / config.LEVERAGE
+        # 风险限定的数量 (BTC)
+        qty_by_risk = risk_amount_usdt / risk_per_btc_usdt
         
-        if margin_needed > self.capital:
-            # Scale down to max leverage (Backup safeguard)
-            qty = (self.capital * config.LEVERAGE) / entry_price
-            
-        return qty
+        # 2. 基于资金占用计算 (Capital Allocation Based - USDT)
+        # 单笔最大投入 USDT = 本金 * 20%
+        # 杠杆后最大可买 USDT 价值
+        max_position_value_usdt = (self.capital * config.POSITION_SIZE_PCT) * config.LEVERAGE
+        
+        # 资金限定的数量 (BTC)
+        qty_by_capital = max_position_value_usdt / entry_price
+        
+        # 取较小值，既满足风险控制，又满足资金分配
+        return min(qty_by_risk, qty_by_capital)
 
     def close_trade(self, trade, price, reason, timestamp, pct=1.0):
         # Calculate PnL
@@ -108,7 +109,10 @@ class Backtester:
             trade.exit_reason = reason
             trade.pnl += net_pnl
             self.trades.append(trade)
-            self.current_trade = None
+            
+            # Remove from open trades
+            if trade in self.open_trades:
+                self.open_trades.remove(trade)
             
             if net_pnl < 0:
                 self.consecutive_losses += 1
@@ -118,16 +122,10 @@ class Backtester:
             # Partial Close
             trade.size -= close_qty
             trade.pnl += net_pnl
-            # We don't set exit_price on partial, 
-            # or we could store it as a list, but for simplicity we keep last exit price
             trade.exit_price = price 
     
     def run(self):
         print("Starting Backtest...")
-        
-        # Iterate through bars
-        # Using iterrows is slow, but allows logic state. 
-        # For < 100k bars it's acceptable.
         
         # Pre-calculate indicators first (safe)
         self.df = self.strategy.calculate_indicators(self.df)
@@ -139,37 +137,33 @@ class Backtester:
             self.check_daily_reset(timestamp)
             
             # Record Equity
-            # Mark-to-market PnL for open position
+            # Mark-to-market PnL for ALL open positions
             unrealized_pnl = 0
-            if self.current_trade:
-                t = self.current_trade
+            for t in self.open_trades:
                 if t.side == 'LONG':
-                    unrealized_pnl = (row['close'] - t.entry_price) * t.size
+                    unrealized_pnl += (row['close'] - t.entry_price) * t.size
                 else:
-                    unrealized_pnl = (t.entry_price - row['close']) * t.size
+                    unrealized_pnl += (t.entry_price - row['close']) * t.size
             
             self.equity_curve.append({'time': timestamp, 'equity': self.capital + unrealized_pnl})
 
-            # Check Risk Stops
+            # Check Risk Stops (Daily)
             if self.stop_trading_today:
-                prev_row = row
-                continue
-                
+                # Still manage open trades even if stopped for new ones
+                pass
+            
             if self.daily_realized_pnl <= config.MAX_DAILY_LOSS:
                 self.stop_trading_today = True
             
             if self.consecutive_losses >= config.MAX_CONSECUTIVE_LOSS:
                 self.stop_trading_today = True
 
-            # --- Manage Open Position ---
-            if self.current_trade:
-                t = self.current_trade
-                
+            # --- Manage Open Positions (Loop over copy) ---
+            for t in self.open_trades[:]:
                 if t.side == 'LONG':
                     # Check SL (Low hits SL)
                     if row['low'] <= t.sl_price:
                         self.close_trade(t, t.sl_price, 'SL', timestamp)
-                        prev_row = row
                         continue
                     
                     # Check TP1 (High hits TP)
@@ -182,14 +176,12 @@ class Backtester:
                     # Check TP2
                     if t.tp1_filled and row['high'] >= t.tp2_price:
                         self.close_trade(t, t.tp2_price, 'TP2', timestamp, pct=1.0)
-                        prev_row = row
                         continue
 
                 else: # SHORT
                     # Check SL (High hits SL)
                     if row['high'] >= t.sl_price:
                         self.close_trade(t, t.sl_price, 'SL', timestamp)
-                        prev_row = row
                         continue
                     
                     # Check TP1 (Low hits TP)
@@ -202,15 +194,22 @@ class Backtester:
                     # Check TP2
                     if t.tp1_filled and row['low'] <= t.tp2_price:
                         self.close_trade(t, t.tp2_price, 'TP2', timestamp, pct=1.0)
-                        prev_row = row
                         continue
 
             # --- Check Entry Signal ---
-            # Only if no open trade and not stopped for day
-            if not self.current_trade and not self.stop_trading_today and self.daily_trades_count < config.MAX_TRADES_PER_DAY:
+            # Condition: Not stopped today AND slots available
+            if not self.stop_trading_today and \
+               self.daily_trades_count < config.MAX_TRADES_PER_DAY and \
+               len(self.open_trades) < config.MAX_OPEN_POSITIONS:
                 
                 signal = self.strategy.check_signal(row, prev_row)
                 entry_price = row['close']
+                
+                # Check if we already have a position in this direction?
+                # Usually grids/strategies might allow scaling in, but here "TrendMeanReversion" usually implies one entry per signal.
+                # Let's simple check: Don't enter if we just entered (prev candle). 
+                # But here we are iterating candles.
+                # Strategy logic handles signal generation.
                 
                 if signal == 'LONG':
                     if config.USE_ATR_FOR_SL and not pd.isna(row['atr']):
@@ -222,7 +221,8 @@ class Backtester:
                     qty = self.calculate_position_size(entry_price, sl_price)
                     
                     if qty > 0:
-                        self.current_trade = Trade(timestamp, entry_price, sl_price, qty, config.SL_PCT, side='LONG')
+                        new_trade = Trade(timestamp, entry_price, sl_price, qty, config.SL_PCT, side='LONG')
+                        self.open_trades.append(new_trade)
                         self.daily_trades_count += 1
                 
                 elif signal == 'SHORT':
@@ -235,7 +235,8 @@ class Backtester:
                     qty = self.calculate_position_size(entry_price, sl_price)
                     
                     if qty > 0:
-                        self.current_trade = Trade(timestamp, entry_price, sl_price, qty, config.SL_PCT, side='SHORT')
+                        new_trade = Trade(timestamp, entry_price, sl_price, qty, config.SL_PCT, side='SHORT')
+                        self.open_trades.append(new_trade)
                         self.daily_trades_count += 1
 
             prev_row = row

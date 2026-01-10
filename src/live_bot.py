@@ -119,18 +119,21 @@ class LiveBot:
             if self.api_ready and config.REAL_TRADING_ENABLED:
                 try:
                     if config.IS_TESTNET:
-                        # 测试网专用的获取余额方式 (绕过 ccxt.fetch_balance 的兼容性问题)
+                        # 测试网专用的获取余额方式
                         account_info = self.exchange.fapiPrivateV2GetAccount()
                         for asset in account_info['assets']:
                             if asset['asset'] == 'USDT':
-                                self.capital = float(asset['availableBalance'])
+                                # 使用 walletBalance (钱包余额) 而非 availableBalance (可用余额)
+                                # 这样可以确保即使有持仓，新开仓位仍按总本金的 20% 计算
+                                self.capital = float(asset['walletBalance'])
                                 break
                     else:
                         # 实盘使用标准方式
                         balance = self.exchange.fetch_balance()
-                        self.capital = float(balance['USDT']['free'])
+                        # 使用 total (总权益) 而非 free (可用余额)
+                        self.capital = float(balance['USDT']['total'])
                     
-                    logger.info(f"💰 账户可用余额: ${self.capital:.2f}")
+                    logger.info(f"💰 账户总权益: ${self.capital:.2f}")
                 except Exception as e:
                     logger.error(f"❌ 获取余额失败 (使用默认配置): {e}")
                     self.capital = config.INITIAL_CAPITAL
@@ -245,7 +248,20 @@ class LiveBot:
             tp1_price = entry_price - (risk_per_unit * config.TP1_RATIO)
             tp2_price = entry_price - (risk_per_unit * config.TP2_RATIO)
         
-        qty = (self.capital * self.risk_pct) / risk_per_unit if risk_per_unit > 0 else 0
+        # Risk Calculation (Enhanced - U-based)
+        if risk_per_unit <= 0:
+            qty = 0
+        else:
+            # 1. Risk Based (USDT)
+            risk_amount_usdt = self.capital * self.risk_pct
+            qty_by_risk = risk_amount_usdt / risk_per_unit
+            
+            # 2. Capital Allocation Based (USDT)
+            # Max position value = Capital * 20% * Leverage
+            max_position_val_usdt = (self.capital * config.POSITION_SIZE_PCT) * config.LEVERAGE
+            qty_by_capital = max_position_val_usdt / entry_price
+            
+            qty = min(qty_by_risk, qty_by_capital)
         
         return {
             'qty': qty,
@@ -390,31 +406,61 @@ class LiveBot:
             self.db.log_operation(self.symbol, side, 'ERROR', price, quantity, 'FAILED', str(e))
             return {'success': False, 'error': str(e)}
 
+    def update_balance(self):
+        """Update wallet balance for position sizing"""
+        if not self.api_ready or not config.REAL_TRADING_ENABLED:
+            return
+
+        try:
+            if config.IS_TESTNET:
+                account_info = self.exchange.fapiPrivateV2GetAccount()
+                for asset in account_info['assets']:
+                    if asset['asset'] == 'USDT':
+                        # 使用 walletBalance (纯钱包余额，不含未实现盈亏)
+                        self.capital = float(asset['walletBalance'])
+                        break
+            else:
+                balance = self.exchange.fetch_balance()
+                # 使用 totalWalletBalance (纯钱包余额)
+                # 需确保 balance['info'] 存在且包含该字段 (标准币安合约接口均包含)
+                if 'totalWalletBalance' in balance['info']:
+                    self.capital = float(balance['info']['totalWalletBalance'])
+                else:
+                    # Fallback: 如果 info 结构不同，尝试从 assets 列表中查找 USDT
+                    for asset in balance['info'].get('assets', []):
+                        if asset['asset'] == 'USDT':
+                            self.capital = float(asset['walletBalance'])
+                            break
+                            
+        except Exception as e:
+            logger.error(f"❌ 更新余额失败: {e}")
+
     def run(self):
         mode_label = "[模拟盘]" if config.IS_TESTNET else "[实盘]"
         logger.info(f"🚀 {mode_label} Qtrading 机器人已就绪 | 交易对: {self.symbol}")
-        logger.info(f"风险设置: {self.risk_pct*100}% 资金/笔 (当前本金 ${self.capital:.2f})")
+        logger.info(f"风险设置: {self.risk_pct*100}% 风险/笔 | 仓位上限: {config.POSITION_SIZE_PCT*100}% 资金/笔")
         logger.info(f"当前策略: {config.ACTIVE_STRATEGY}")
         logger.info("等待下一个 5分钟K线 收盘...")
 
         while True:
-            # Log Equity Snapshot
+            # 1. Update Balance & Log Equity
+            self.update_balance()
             self.db.log_equity(self.capital)
 
-            # 1. Sync with time
+            # 2. Sync with time
             now = datetime.now()
             next_run = now - timedelta(minutes=now.minute % 5, seconds=now.second, microseconds=now.microsecond) + timedelta(minutes=5)
             seconds_to_wait = (next_run - now).total_seconds()
             sleep_time = seconds_to_wait + 3
             
-            logger.info(f"💤 休眠 {int(sleep_time)}秒 直到 {next_run.strftime('%H:%M:%S')}...")
+            logger.info(f"💤 休眠 {int(sleep_time)}秒 直到 {next_run.strftime('%H:%M:%S')} | 当前权益: ${self.capital:.2f}...")
             time.sleep(sleep_time)
             
             logger.info("正在检查市场...")
             
             data = self.get_latest_indicators()
             if not data:
-                logger.warning("⚠️ 数据获取失败，将在下一个周期重试。 সন")
+                logger.warning("⚠️ 数据获取失败，将在下一个周期重试。")
                 continue
                 
             # 3. Print Status
@@ -429,7 +475,7 @@ class LiveBot:
             if signal:
                 self.execute_signal(price, signal, data['atr'])
             else:
-                logger.info("  >> 暂无信号。 সন")
+                logger.info("  >> 暂无信号。")
 
     def execute_signal(self, price, side, atr):
         side_cn = "做多" if side == 'LONG' else "做空"
