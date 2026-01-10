@@ -47,8 +47,12 @@ class LiveBot:
         
         exchange_config = {
             'enableRateLimit': True,
-            'options': {'defaultType': 'future'},
-            'verify': False, 
+            'options': {
+                'defaultType': 'future',
+                'fetchCurrencies': False  # 关键修复: 禁止获取现货币种信息，防止调用 capital/config/getall 报错
+            },
+            # 忽略 SSL 证书验证 (解决某些网络环境下的连接问题) 将True改成False
+            'verify': True, 
             'timeout': 30000,
         }
         
@@ -253,100 +257,138 @@ class LiveBot:
 
     def place_orders(self, side, quantity, price, sl_price, tp1_price, tp2_price):
         """Execute Real Orders on Binance"""
+        execution_info = {'success': False}
         try:
             # 确保交易对信息已加载 (用于精度计算)
             if not self.exchange.markets:
-                self.exchange.load_markets()
+                try:
+                    self.exchange.load_markets()
+                except Exception as e:
+                    if config.IS_TESTNET:
+                        logger.warning(f"⚠️ load_markets 失败 ({e})，尝试手动注入 BTC/USDT 精度信息...")
+                        # 手动注入测试网精度
+                        self.exchange.markets = {
+                            self.symbol: {
+                                'id': 'BTCUSDT',
+                                'symbol': self.symbol,
+                                'type': 'future',
+                                'spot': False,
+                                'future': True,
+                                'contract': True,
+                                'precision': {'amount': 3, 'price': 1},
+                                'limits': {'amount': {'min': 0.001, 'max': 1000}, 'price': {'min': 0.1, 'max': 1000000}, 'cost': {'min': 5}}
+                            }
+                        }
+                    else:
+                        raise e
 
-            # 格式化精度 (核心修复: 解决 -1111 错误)
+            # 格式化精度
             qty_str = self.exchange.amount_to_precision(self.symbol, quantity)
             sl_price_str = self.exchange.price_to_precision(self.symbol, sl_price)
             tp1_price_str = self.exchange.price_to_precision(self.symbol, tp1_price)
             tp2_price_str = self.exchange.price_to_precision(self.symbol, tp2_price)
+            
+            qty_f = float(qty_str)
 
             logger.info(f"⚡️ 正在下单: {side} {qty_str} BTC @ 市价")
             
             if not self.api_ready:
                 logger.error("❌ 未配置 API Key，无法下单。")
-                return False
+                return execution_info
 
+            # --- Testnet Specific Logic ---
             if config.IS_TESTNET:
                 market_id = self.symbol.replace('/', '')
                 side_str = 'BUY' if side == 'LONG' else 'SELL'
                 sl_side_str = 'SELL' if side == 'LONG' else 'BUY'
                 
-                # 1. 开仓 (Market)
+                # 1. Entry
                 entry_order = self.exchange.fapiPrivatePostOrder({
-                    'symbol': market_id,
-                    'side': side_str,
-                    'type': 'MARKET',
-                    'quantity': qty_str
+                    'symbol': market_id, 'side': side_str, 'type': 'MARKET', 'quantity': qty_str
                 })
                 logger.info(f"✅ [Testnet] 开仓成功: {entry_order['orderId']}")
                 
-                # 计算均价用于记录
                 avg_price = float(entry_order.get('avgPrice', 0.0))
-                if avg_price == 0 and float(entry_order.get('executedQty', 0)) > 0:
-                    avg_price = float(entry_order['cumQuote']) / float(entry_order['executedQty'])
-                if avg_price == 0:
-                    avg_price = price
+                if avg_price == 0: avg_price = price
                 
-                # 2. 止损 (Stop Market)
+                # 2. SL
                 self.exchange.fapiPrivatePostOrder({
-                    'symbol': market_id,
-                    'side': sl_side_str,
-                    'type': 'STOP_MARKET',
-                    'stopPrice': sl_price_str,
-                    'closePosition': 'true'
+                    'symbol': market_id, 'side': sl_side_str, 'type': 'STOP_MARKET',
+                    'stopPrice': sl_price_str, 'closePosition': 'true'
                 })
                 logger.info(f"🛡 [Testnet] 止损已挂单: ${sl_price_str}")
                 
-                # 3. 止盈 (Limit)
-                # 计算分批数量
-                qty_f = float(qty_str)
-                q1 = self.exchange.amount_to_precision(self.symbol, qty_f * config.TP1_CLOSE_PCT)
-                q2 = self.exchange.amount_to_precision(self.symbol, qty_f - float(q1))
+                # 3. TP
+                qty_tp1 = float(self.exchange.amount_to_precision(self.symbol, qty_f * config.TP1_CLOSE_PCT))
+                qty_tp2 = float(self.exchange.amount_to_precision(self.symbol, qty_f - qty_tp1))
                 
-                # TP1
-                self.exchange.fapiPrivatePostOrder({
-                    'symbol': market_id,
-                    'side': sl_side_str,
-                    'type': 'LIMIT',
-                    'timeInForce': 'GTC',
-                    'quantity': q1,
-                    'price': tp1_price_str,
-                    'reduceOnly': 'true'
-                })
-                # TP2
-                self.exchange.fapiPrivatePostOrder({
-                    'symbol': market_id,
-                    'side': sl_side_str,
-                    'type': 'LIMIT',
-                    'timeInForce': 'GTC',
-                    'quantity': q2,
-                    'price': tp2_price_str,
-                    'reduceOnly': 'true'
-                })
-                logger.info(f"💰 [Testnet] 止盈已挂单: {tp1_price_str} / {tp2_price_str}")
+                if qty_tp1 > 0:
+                    self.exchange.fapiPrivatePostOrder({
+                        'symbol': market_id, 'side': sl_side_str, 'type': 'LIMIT', 'timeInForce': 'GTC',
+                        'quantity': qty_tp1, 'price': tp1_price_str, 'reduceOnly': 'true'
+                    })
+                
+                if qty_tp2 > 0:
+                    self.exchange.fapiPrivatePostOrder({
+                        'symbol': market_id, 'side': sl_side_str, 'type': 'LIMIT', 'timeInForce': 'GTC',
+                        'quantity': qty_tp2, 'price': tp2_price_str, 'reduceOnly': 'true'
+                    })
                 
                 self.db.log_operation(self.symbol, side, 'ENTRY', avg_price, qty_f, 'FILLED')
-                return True
+                
+                execution_info = {
+                    'success': True,
+                    'avg_price': avg_price,
+                    'qty': qty_f,
+                    'sl_price': float(sl_price_str)
+                }
+                return execution_info
 
-            # --- Mainnet Logic (Standard CCXT) ---
+            # --- Mainnet Logic ---
             order_side = 'buy' if side == 'LONG' else 'sell'
-            entry_order = self.exchange.create_order(self.symbol, 'market', order_side, float(qty_str))
-            avg_price = entry_order.get('average', price) 
-            
+            tp_side = 'sell' if side == 'LONG' else 'buy'
             sl_side = 'sell' if side == 'LONG' else 'buy'
-            self.exchange.create_order(self.symbol, 'STOP_MARKET', sl_side, float(qty_str), None, 
-                                     params={'stopPrice': float(sl_price_str), 'reduceOnly': True})
             
-            # TP Orders...
-            return True
+            # 1. Entry
+            entry_order = self.exchange.create_order(self.symbol, 'market', order_side, qty_f)
+            avg_price = entry_order.get('average', price) 
+            logger.info(f"✅ 开仓成功: {entry_order['id']}")
+            self.db.log_operation(self.symbol, side, 'ENTRY', avg_price, qty_f, 'FILLED')
+            
+            # 2. SL
+            self.exchange.create_order(self.symbol, 'STOP_MARKET', sl_side, qty_f, None, 
+                                     params={'stopPrice': float(sl_price_str), 'reduceOnly': True})
+            logger.info(f"🛡 止损已挂单: ${sl_price_str}")
+            self.db.log_operation(self.symbol, side, 'STOP_LOSS_ORDER', float(sl_price_str), qty_f, 'NEW')
+
+            # 3. TP
+            qty_tp1 = float(self.exchange.amount_to_precision(self.symbol, qty_f * config.TP1_CLOSE_PCT))
+            qty_tp2 = float(self.exchange.amount_to_precision(self.symbol, qty_f - qty_tp1))
+            
+            if qty_tp1 > 0:
+                self.exchange.create_order(self.symbol, 'limit', tp_side, qty_tp1, float(tp1_price_str), 
+                                         params={'reduceOnly': True})
+                logger.info(f"💰 TP1 已挂单: ${tp1_price_str}")
+                self.db.log_operation(self.symbol, side, 'TP1_ORDER', float(tp1_price_str), qty_tp1, 'NEW')
+            
+            if qty_tp2 > 0:
+                self.exchange.create_order(self.symbol, 'limit', tp_side, qty_tp2, float(tp2_price_str), 
+                                         params={'reduceOnly': True})
+                logger.info(f"💰 TP2 已挂单: ${tp2_price_str}")
+                self.db.log_operation(self.symbol, side, 'TP2_ORDER', float(tp2_price_str), qty_tp2, 'NEW')
+            
+            execution_info = {
+                'success': True,
+                'avg_price': avg_price,
+                'qty': qty_f,
+                'sl_price': float(sl_price_str)
+            }
+            return execution_info
+
         except Exception as e:
             logger.error(f"❌ 下单失败: {e}")
             self.db.log_operation(self.symbol, side, 'ERROR', price, quantity, 'FAILED', str(e))
-            return False
+            return {'success': False, 'error': str(e)}
 
     def run(self):
         mode_label = "[模拟盘]" if config.IS_TESTNET else "[实盘]"
@@ -426,13 +468,16 @@ class LiveBot:
         logger.info("="*40)
         
         # Enhanced Notification
+        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         msg_title = f"{side_emoji} {mode_tag} BTC {side_cn} {status_msg}"
         msg_body = (
+            f"⏰ 时间: {current_time}\n"
             f"💰 价格: ${price:,.2f}\n"
             f"🛡 止损: ${params['sl']:,.2f}\n"
             f"🎯 止盈: ${params['tp1']:,.2f} / ${params['tp2']:,.2f}\n"
             f"⚖️ 仓位: {params['qty']:.5f} BTC\n"
-            f"📊 因子: ATR={atr:.2f}"
+            f"📊 因子: ATR={atr:.2f}\n"
+            f"🤖 策略: {config.ACTIVE_STRATEGY}"
         )
         self.send_notification(msg_title, msg_body)
 
