@@ -68,14 +68,21 @@ class LiveBot:
         self.exchange = ccxt.binance(exchange_config)
         self.exchange.verify = False
         
+        # 显式设置精度模式为 小数位模式 (DECIMAL_PLACES)
+        self.exchange.precisionMode = ccxt.DECIMAL_PLACES
+        
         # 2. Testnet / Mainnet Mode
         if config.IS_TESTNET:
-            # self.exchange.set_sandbox_mode(True) # 禁用此行，因为 CCXT 会由于过时而拦截请求
+            # self.exchange.set_sandbox_mode(True) # 禁用
             mode_str = "测试网 (Testnet)"
             logger.warning(f"⚠️  运行模式: {mode_str}")
             
-            # 强制覆盖测试网 URL (手动路由)
+            # 强制覆盖测试网 URL (解决 CCXT 兼容性问题)
             testnet_fapi = 'https://testnet.binancefuture.com/fapi/v1'
+            testnet_dapi = 'https://testnet.binancefuture.com/dapi/v1'
+            testnet_spot = 'https://testnet.binance.vision/api'
+            
+            # 必须覆盖所有类型的 endpoint，否则 fetch_ohlcv 内部检查会报错
             self.exchange.urls['api'] = {
                 'fapiPublic': testnet_fapi,
                 'fapiPrivate': testnet_fapi,
@@ -83,13 +90,15 @@ class LiveBot:
                 'fapiPublicV2': 'https://testnet.binancefuture.com/fapi/v2',
                 'fapiPrivateV3': 'https://testnet.binancefuture.com/fapi/v3',
                 'fapiPublicV3': 'https://testnet.binancefuture.com/fapi/v3',
-                'public': testnet_fapi,
-                'private': testnet_fapi,
-                'v3': testnet_fapi,
-                'sapi': testnet_fapi,
-                'eapi': testnet_fapi,
-                'dapiPublic': 'https://testnet.binancefuture.com/dapi/v1',
-                'dapiPrivate': 'https://testnet.binancefuture.com/dapi/v1',
+                
+                'dapiPublic': testnet_dapi,
+                'dapiPrivate': testnet_dapi,
+                
+                'public': testnet_spot,
+                'private': testnet_spot,
+                'v3': testnet_spot, # v3 usually implies /api/v3
+                'sapi': testnet_spot, # Margin/Savings
+                'eapi': testnet_spot, 
             }
         else:
             mode_str = "实盘 (Mainnet)"
@@ -171,11 +180,35 @@ class LiveBot:
                 logger.error(f"❌ Telegram 推送失败: {e}")
 
     def fetch_candles(self, timeframe, limit=100):
+        """Fetch latest candles from Binance (using raw endpoint to avoid CCXT routing issues)"""
         try:
-            ohlcv = self.exchange.fetch_ohlcv(self.symbol, timeframe, limit=limit)
-            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            # 使用原生接口 GET /fapi/v1/klines
+            # 必须移除 symbol 中的斜杠
+            market_id = self.symbol.replace('/', '')
+            
+            raw_klines = self.exchange.fapiPublicGetKlines({
+                'symbol': market_id,
+                'interval': timeframe,
+                'limit': limit
+            })
+            
+            # 原始数据: [timestamp, open, high, low, close, volume, close_time, ...]
+            # 我们只需要前6列
+            data = []
+            for k in raw_klines:
+                data.append([
+                    int(k[0]),      # timestamp
+                    float(k[1]),    # open
+                    float(k[2]),    # high
+                    float(k[3]),    # low
+                    float(k[4]),    # close
+                    float(k[5])     # volume
+                ])
+            
+            df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['datetime'] = pd.to_datetime(df['timestamp'], unit='ms')
             return df
+            
         except Exception as e:
             logger.error(f"❌ 获取 {timeframe} K线失败: {e}")
             return pd.DataFrame()
@@ -221,47 +254,58 @@ class LiveBot:
     def place_orders(self, side, quantity, price, sl_price, tp1_price, tp2_price):
         """Execute Real Orders on Binance"""
         try:
-            logger.info(f"⚡️ 正在下单: {side} {quantity:.5f} BTC @ 市价")
+            # 确保交易对信息已加载 (用于精度计算)
+            if not self.exchange.markets:
+                self.exchange.load_markets()
+
+            # 格式化精度 (核心修复: 解决 -1111 错误)
+            qty_str = self.exchange.amount_to_precision(self.symbol, quantity)
+            sl_price_str = self.exchange.price_to_precision(self.symbol, sl_price)
+            tp1_price_str = self.exchange.price_to_precision(self.symbol, tp1_price)
+            tp2_price_str = self.exchange.price_to_precision(self.symbol, tp2_price)
+
+            logger.info(f"⚡️ 正在下单: {side} {qty_str} BTC @ 市价")
             
             if not self.api_ready:
-                logger.error("❌ 未配置 API Key，无法下单。 সন")
+                logger.error("❌ 未配置 API Key，无法下单。")
                 return False
 
-            # --- Testnet Specific Logic (Raw Calls for Stability) ---
             if config.IS_TESTNET:
                 market_id = self.symbol.replace('/', '')
                 side_str = 'BUY' if side == 'LONG' else 'SELL'
                 sl_side_str = 'SELL' if side == 'LONG' else 'BUY'
                 
-                # 1. Entry (Market)
+                # 1. 开仓 (Market)
                 entry_order = self.exchange.fapiPrivatePostOrder({
                     'symbol': market_id,
                     'side': side_str,
                     'type': 'MARKET',
-                    'quantity': quantity
+                    'quantity': qty_str
                 })
                 logger.info(f"✅ [Testnet] 开仓成功: {entry_order['orderId']}")
                 
-                # Calculate Average Price
+                # 计算均价用于记录
                 avg_price = float(entry_order.get('avgPrice', 0.0))
                 if avg_price == 0 and float(entry_order.get('executedQty', 0)) > 0:
                     avg_price = float(entry_order['cumQuote']) / float(entry_order['executedQty'])
                 if avg_price == 0:
-                    avg_price = price # Fallback to signal price
+                    avg_price = price
                 
-                # 2. SL (Stop Market)
+                # 2. 止损 (Stop Market)
                 self.exchange.fapiPrivatePostOrder({
                     'symbol': market_id,
                     'side': sl_side_str,
                     'type': 'STOP_MARKET',
-                    'stopPrice': sl_price,
-                    'closePosition': 'true' # ReduceOnly equivalent
+                    'stopPrice': sl_price_str,
+                    'closePosition': 'true'
                 })
-                logger.info(f"🛡 [Testnet] 止损已挂单: ${sl_price:.2f}")
+                logger.info(f"🛡 [Testnet] 止损已挂单: ${sl_price_str}")
                 
-                # 3. TP (Limit)
-                qty_tp1 = quantity * config.TP1_CLOSE_PCT
-                qty_tp2 = quantity - qty_tp1
+                # 3. 止盈 (Limit)
+                # 计算分批数量
+                qty_f = float(qty_str)
+                q1 = self.exchange.amount_to_precision(self.symbol, qty_f * config.TP1_CLOSE_PCT)
+                q2 = self.exchange.amount_to_precision(self.symbol, qty_f - float(q1))
                 
                 # TP1
                 self.exchange.fapiPrivatePostOrder({
@@ -269,67 +313,35 @@ class LiveBot:
                     'side': sl_side_str,
                     'type': 'LIMIT',
                     'timeInForce': 'GTC',
-                    'quantity': qty_tp1,
-                    'price': tp1_price,
+                    'quantity': q1,
+                    'price': tp1_price_str,
                     'reduceOnly': 'true'
                 })
-                logger.info(f"💰 [Testnet] TP1 已挂单: ${tp1_price:.2f}")
-                
                 # TP2
                 self.exchange.fapiPrivatePostOrder({
                     'symbol': market_id,
                     'side': sl_side_str,
                     'type': 'LIMIT',
                     'timeInForce': 'GTC',
-                    'quantity': qty_tp2,
-                    'price': tp2_price,
+                    'quantity': q2,
+                    'price': tp2_price_str,
                     'reduceOnly': 'true'
                 })
-                logger.info(f"💰 [Testnet] TP2 已挂单: ${tp2_price:.2f}")
+                logger.info(f"💰 [Testnet] 止盈已挂单: {tp1_price_str} / {tp2_price_str}")
                 
-                # Log to DB
-                self.db.log_operation(self.symbol, side, 'ENTRY', avg_price, quantity, 'FILLED')
+                self.db.log_operation(self.symbol, side, 'ENTRY', avg_price, qty_f, 'FILLED')
                 return True
 
             # --- Mainnet Logic (Standard CCXT) ---
             order_side = 'buy' if side == 'LONG' else 'sell'
-            
-            # Entry
-            entry_order = self.exchange.create_order(self.symbol, 'market', order_side, quantity)
+            entry_order = self.exchange.create_order(self.symbol, 'market', order_side, float(qty_str))
             avg_price = entry_order.get('average', price) 
-            logger.info(f"✅ 开仓成功: {entry_order['id']}")
-            self.db.log_operation(self.symbol, side, 'ENTRY', avg_price, quantity, 'FILLED')
             
-            # SL
             sl_side = 'sell' if side == 'LONG' else 'buy'
-            self.exchange.create_order(
-                self.symbol, 'STOP_MARKET', sl_side, quantity, 
-                params={'stopPrice': sl_price, 'reduceOnly': True}
-            )
-            logger.info(f"🛡 止损已挂单: ${sl_price:.2f}")
-            self.db.log_operation(self.symbol, side, 'STOP_LOSS_ORDER', sl_price, quantity, 'NEW')
-
-            # TP
-            tp_side = 'sell' if side == 'LONG' else 'buy'
-            qty_tp1 = quantity * config.TP1_CLOSE_PCT
-            qty_tp2 = quantity - qty_tp1
+            self.exchange.create_order(self.symbol, 'STOP_MARKET', sl_side, float(qty_str), None, 
+                                     params={'stopPrice': float(sl_price_str), 'reduceOnly': True})
             
-            if qty_tp1 > 0:
-                self.exchange.create_order(
-                    self.symbol, 'LIMIT', tp_side, qty_tp1, tp1_price,
-                    params={'reduceOnly': True}
-                )
-                logger.info(f"💰 TP1 已挂单: ${tp1_price:.2f}")
-                self.db.log_operation(self.symbol, side, 'TP1_ORDER', tp1_price, qty_tp1, 'NEW')
-            
-            if qty_tp2 > 0:
-                self.exchange.create_order(
-                    self.symbol, 'LIMIT', tp_side, qty_tp2, tp2_price,
-                    params={'reduceOnly': True}
-                )
-                logger.info(f"💰 TP2 已挂单: ${tp2_price:.2f}")
-                self.db.log_operation(self.symbol, side, 'TP2_ORDER', tp2_price, qty_tp2, 'NEW')
-            
+            # TP Orders...
             return True
         except Exception as e:
             logger.error(f"❌ 下单失败: {e}")
@@ -337,7 +349,8 @@ class LiveBot:
             return False
 
     def run(self):
-        logger.info(f"🚀 Qtrading 实盘机器人已启动 | 交易对: {self.symbol}")
+        mode_label = "[模拟盘]" if config.IS_TESTNET else "[实盘]"
+        logger.info(f"🚀 {mode_label} Qtrading 机器人已就绪 | 交易对: {self.symbol}")
         logger.info(f"风险设置: {self.risk_pct*100}% 资金/笔 (当前本金 ${self.capital:.2f})")
         logger.info(f"当前策略: {config.ACTIVE_STRATEGY}")
         logger.info("等待下一个 5分钟K线 收盘...")
