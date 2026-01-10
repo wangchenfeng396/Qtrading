@@ -520,8 +520,9 @@ class LiveBot:
             f"⏰ 时间: {current_time}\n"
             f"💰 价格: ${price:,.2f}\n"
             f"🛡 止损: ${params['sl']:,.2f}\n"
-            f"🎯 止盈: ${params['tp1']:,.2f} / ${params['tp2']:,.2f}\n"
-            f"⚖️ 仓位: {params['qty']:.5f} BTC\n"
+            f"🎯 止盈1: ${params['tp1']:,.2f} ({config.TP1_RATIO}R)\n"
+            f"🎯 止盈2: ${params['tp2']:,.2f} ({config.TP2_RATIO}R)\n"
+            f"⚖️ 仓位: {qty_label}\n"
             f"📊 因子: ATR={atr:.2f}\n"
             f"🤖 策略: {config.ACTIVE_STRATEGY}"
         )
