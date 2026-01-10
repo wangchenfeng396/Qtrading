@@ -1,8 +1,8 @@
 # config.py
 
 # --- 账户设置 ---
-INITIAL_CAPITAL = 50.0      # 初始资金 (USDT)
-LEVERAGE = 5                # 杠杆倍数 (仅用于计算最大可开仓位)
+INITIAL_CAPITAL = 100.0      # 初始资金 (USDT)
+LEVERAGE = 8                # 杠杆倍数 (仅用于计算最大可开仓位)
 COMMISSION_RATE = 0.0005    # 手续费 (万5, 币安标准)
 
 # --- 风控设置 (严格) ---
