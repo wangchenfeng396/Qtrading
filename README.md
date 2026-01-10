@@ -159,7 +159,11 @@ kill <PID>
 *   **风控**: 2% 复利仓位 + ATR 动态止损。
 
 详细说明请参阅 [docs/trading_strategy.md](docs/trading_strategy.md)。
+
 Web 监控说明请参阅 [docs/web_dashboard.md](docs/web_dashboard.md)。
+
 数据库设计请参阅 [docs/database_schema.md](docs/database_schema.md)。
+
 配置详解请参阅 [docs/configuration_guide.md](docs/configuration_guide.md)。
+
 安全配置指引请参阅 [docs/security_setup.md](docs/security_setup.md)。
